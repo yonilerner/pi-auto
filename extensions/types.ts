@@ -60,6 +60,12 @@ export interface PiAutoSettings {
 	enableDigest: boolean;
 	/** Sensitive path patterns (substring match). Reads matching these are reviewed even inside cwd. */
 	sensitivePathPatterns: string[];
+	/**
+	 * Extra known-safe command prefixes that bypass the reviewer entirely.
+	 * Each prefix matches if it is a token-by-token prefix of the proposed argv.
+	 * Example: `[["npm", "test"], ["pnpm", "lint"]]`.
+	 */
+	extraSafeCommandPrefixes: string[][];
 	/** Verbose: print rationale inline for every allow. */
 	announceAllows: boolean;
 	/** Custom policy text appended after the base policy. Empty = use defaults. */

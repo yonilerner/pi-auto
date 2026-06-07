@@ -12,7 +12,8 @@
 		"test": "vitest run --exclude '**/live/**'",
 		"test:watch": "vitest --exclude '**/live/**'",
 		"test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live",
-		"test:live:5x": "PI_AUTO_LIVE_TESTS=1 PI_AUTO_ITERATIONS=5 vitest run tests/live"
+		"test:live:5x": "PI_AUTO_LIVE_TESTS=1 PI_AUTO_ITERATIONS=5 vitest run tests/live",
+		"sync-codex": "tsx scripts/sync-codex.ts"
 	},
 	"pi": {
 		"extensions": [
@@ -27,8 +28,13 @@
 	"devDependencies": {
 		"@earendil-works/pi-ai": "^0.74.2",
 		"@earendil-works/pi-coding-agent": "^0.74.2",
+		"tsx": "^4.22.4",
 		"typebox": "^1.2.2",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.8"
+	},
+	"dependencies": {
+		"tree-sitter": "^0.25.0",
+		"tree-sitter-bash": "^0.25.1"
 	}
 }

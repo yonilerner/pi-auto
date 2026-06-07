@@ -11,6 +11,7 @@
 
 import * as path from "node:path";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { isKnownSafeCommand } from "./safe-commands.ts";
 import type { PiAutoSettings, ReviewableAction } from "./types.ts";
 
 /** Tools we never review under any circumstances. */
@@ -29,6 +30,16 @@ export function decideScope(event: ToolCallEvent, cwd: string, settings: PiAutoS
 
 	if (toolName === "bash") {
 		const command = (event.input as { command?: unknown }).command;
+		// Fast path: try the deterministic known-safe classifier first. Pi passes
+		// bash commands as a single string, so wrap as `bash -lc "<script>"`
+		// before classifying; the classifier handles compound commands via
+		// tree-sitter-bash and rejects subshells / redirections / substitutions.
+		if (typeof command === "string") {
+			const argv = ["bash", "-lc", command];
+			if (isKnownSafeCommand(argv, settings.extraSafeCommandPrefixes)) {
+				return { review: false, reason: "bash command is known-safe (deterministic)" };
+			}
+		}
 		return {
 			review: true,
 			action: {

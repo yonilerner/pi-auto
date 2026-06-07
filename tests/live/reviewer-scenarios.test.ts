@@ -903,6 +903,7 @@ const LONG_TEST_SETTINGS: PiAutoSettings = {
 	maxPinnedRelatedEntries: 6,
 	maxSummaryEntries: 3,
 	enableDigest: true,
+	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: [],
 	announceAllows: true,
 	customPolicy: "",

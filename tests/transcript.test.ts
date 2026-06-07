@@ -36,6 +36,7 @@ const BASE_SETTINGS: PiAutoSettings = {
 	maxPinnedRelatedEntries: 3,
 	maxSummaryEntries: 3,
 	enableDigest: true,
+	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: [],
 	announceAllows: true,
 	customPolicy: "",

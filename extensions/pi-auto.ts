@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	],
 	announceAllows: true,
 	customPolicy: "",
+	extraSafeCommandPrefixes: [],
 };
 
 const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {

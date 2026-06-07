@@ -35,13 +35,42 @@ Not every tool call goes through the LLM — that would burn tokens on `ls` and 
 
 | Tool                | Reviewed?                                                           |
 | ------------------- | ------------------------------------------------------------------- |
-| `bash`              | **Always**                                                          |
+| `bash`              | Only if it isn't "known-safe" (see below)                           |
 | `write`, `edit`     | Only when the target path is **outside cwd**                        |
 | `read`              | Outside cwd, **or** matching a sensitive-path heuristic (~/.ssh, ~/.aws, .env, credentials files, …) |
 | `grep`, `find`, `ls`| Never                                                               |
 | Custom / MCP tools  | **Always** (we don't know what they do)                             |
 
 Reading credential files is treated as risky even though it's "read-only": the contents enter the conversation context and can later be exfiltrated by `bash`.
+
+### Bash known-safe fast path
+
+Before burning a reviewer call on `bash`, pi-auto runs the command through a deterministic safe-command classifier ported from [Codex's `is_safe_command`](https://github.com/openai/codex/blob/main/codex-rs/shell-command/src/command_safety/is_safe_command.rs). If it returns true the tool runs without any LLM call — saves ~1.7s of latency on the common case of `ls`/`git status`/`grep`/`pwd` and friends.
+
+The classifier covers:
+
+- A curated allow-list of read-only executables (`cat, cd, cut, echo, expr, false, grep, head, id, ls, nl, paste, pwd, rev, seq, stat, tail, tr, true, uname, uniq, wc, which, whoami`).
+- Per-command flag awareness for executables that have unsafe flags: `find` (`-exec`/`-delete`/...), `rg` (`--pre`/`--search-zip`/...), `git` (only `status`/`log`/`diff`/`show`/`branch` subcommands with read-only flags, blocks `-c` / `--git-dir` / `--exec-path` / etc.), `base64` (no `-o`/`--output`), `sed` (only the `-n N[,M]p` pattern).
+- Compound bash scripts via [`tree-sitter-bash`](https://github.com/tree-sitter/tree-sitter-bash). The script must be a chain of plain commands joined only by `&&`, `||`, `;`, `|`. **All inner commands must themselves be known-safe.** Anything else — subshells `(...)`, redirections `>`/`<`, command substitution `$()` / backticks, variable expansion `$VAR`, heredocs, herestrings, arithmetic `$((...))`, variable assignments — bails out and falls through to the LLM reviewer.
+
+So `ls && grep foo *.md` is fast-pathed. `ls && rm -rf /` is reviewed. `(ls)` is reviewed. `ls > out.txt` is reviewed. `echo $(pwd)` is reviewed. Etc.
+
+### Extending the safe-list
+
+If there are specific command prefixes you always want to skip review on (e.g. project-specific test runners), add them as `extraSafeCommandPrefixes`:
+
+```ts
+// in DEFAULT_SETTINGS
+extraSafeCommandPrefixes: [
+  ["npm", "test"],
+  ["pnpm", "lint"],
+  ["cargo", "check"],
+],
+```
+
+A prefix matches if it is a token-by-token prefix of the proposed argv. `["npm", "test"]` matches `npm test`, `npm test --grep foo`, etc. — but not `npm install`.
+
+Extra prefixes also apply inside compound bash chains: with the above, `bash -lc "npm test && pnpm lint"` is fast-pathed.
 
 ## Behavior
 
@@ -84,6 +113,18 @@ Run `/pi-auto` inside pi to see the active settings.
 
 - `/pi-auto` — show current configuration.
 - `/pi-auto-toggle-announce` — toggle inline rationale messages for allowed actions.
+
+## Upstream sync
+
+The safe-command classifier and bash parser are ports of [Codex's Rust implementation](https://github.com/openai/codex/tree/main/codex-rs/shell-command). To track upstream changes:
+
+```bash
+npm run sync-codex
+```
+
+This downloads the current upstream versions, diffs them against the snapshots in `vendor/codex-upstream/`, and prints a summary of what changed so you can mirror it in `extensions/bash-parser.ts` and `extensions/safe-commands.ts`.
+
+See `vendor/codex-upstream/SYNC.md` for the last-synced commit.
 
 ## How it compares to Codex
 
