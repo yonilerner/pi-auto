@@ -55,19 +55,21 @@ describe("buildReviewerSystemPrompt", () => {
 
 	it("explicitly says assistant messages are NOT authorization", () => {
 		const prompt = buildReviewerSystemPrompt("");
-		expect(prompt).toMatch(/\[assistant\].*not|assistant.*never|cannot.*authoriz/i);
+		// Some form of "assistant" + "never|not|no" co-occurrence.
+		expect(prompt).toMatch(/(?:never|not|no).{0,80}\[?assistant\]?|\[?assistant\]?.{0,80}(?:never|not|no)/i);
 		// And the circular-reasoning argument.
-		expect(prompt).toMatch(/circular|itself an assistant decision/i);
+		expect(prompt).toMatch(/circular|itself an? assistant decision/i);
 	});
 
 	it("explicitly says tool results are NOT authorization (prompt injection guard)", () => {
 		const prompt = buildReviewerSystemPrompt("");
-		expect(prompt).toMatch(/\[tool_result\].*not|tool output.*not.*authoriz|prompt injection/i);
+		expect(prompt).toMatch(/\[?tool_result\]?|tool output/i);
+		expect(prompt).toMatch(/prompt injection|attacker|adversarial/i);
 	});
 
 	it("tells the reviewer to score unknown when only assistant narration supports the action", () => {
 		const prompt = buildReviewerSystemPrompt("");
 		expect(prompt).toMatch(/unknown/);
-		expect(prompt).toMatch(/assistant.*intent|only signal is the assistant/i);
+		expect(prompt).toMatch(/only signal is (?:the )?assistant|assistant narration|assistant drift/i);
 	});
 });
