@@ -1,5 +1,7 @@
 # pi-auto
 
+> ⚠️ **Experimental and untested.** This is a hobby/research project. It has not been used in production, has not been security-audited, and the live LLM-reviewer scenarios pass on a curated test suite — not in the wild. The reviewer is a probabilistic LLM and will make mistakes. **Do not treat this as a security boundary.** Treat it as a friction-reduction tool for unattended tool execution that you should still supervise. Don't rely on it to stop a determined adversary; don't run it on an untrusted machine and call it sandboxing.
+
 LLM-based tool-call auto-approval for the [pi coding agent](https://pi.dev).
 
 Inspired by [Codex's Auto-review / Guardian system](https://developers.openai.com/codex/concepts/sandboxing/auto-review). For each tool call, an LLM "reviewer" scores the action along two dimensions:
