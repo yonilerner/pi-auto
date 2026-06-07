@@ -1,0 +1,34 @@
+{
+	"name": "pi-auto",
+	"version": "0.1.0",
+	"description": "LLM-based tool-call auto-approval for the pi coding agent. Inspired by Codex's Auto-review/Guardian system: scores each tool call by risk and user authorization, then allows or denies it.",
+	"keywords": [
+		"pi-package"
+	],
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run --exclude '**/live/**'",
+		"test:watch": "vitest --exclude '**/live/**'",
+		"test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live",
+		"test:live:5x": "PI_AUTO_LIVE_TESTS=1 PI_AUTO_ITERATIONS=5 vitest run tests/live"
+	},
+	"pi": {
+		"extensions": [
+			"./extensions/pi-auto.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^0.74.2",
+		"@earendil-works/pi-coding-agent": "^0.74.2",
+		"typebox": "^1.2.2",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.8"
+	}
+}
