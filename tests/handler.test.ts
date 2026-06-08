@@ -18,10 +18,13 @@ const SETTINGS: PiAutoSettings = {
 	maxPinnedRelatedEntries: 6,
 	maxSummaryEntries: 3,
 	enableDigest: false,
+	useCodexAutoReview: false,
 	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: [],
 	announceAllows: true,
 	customPolicy: "",
+	stripAssistantText: false,
+	stripToolResults: false,
 };
 
 const ACTION: ReviewableAction = {

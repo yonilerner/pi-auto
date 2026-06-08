@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	maxPinnedRelatedEntries: 6,
 	maxSummaryEntries: 3,
 	enableDigest: true,
+	useCodexAutoReview: false,
 	sensitivePathPatterns: [
 		"~/.ssh",
 		"~/.aws",
@@ -51,6 +52,13 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	announceAllows: true,
 	customPolicy: "",
 	extraSafeCommandPrefixes: [],
+	// Default to false on both: the policy already polices authorization-source
+	// (assistant text doesn't count as auth, tool results don't count as auth),
+	// and stripping carries a small loss of context for evidence chains like
+	// `git status` -> action. See the README for the ablation comparing
+	// gpt-5-mini across baseline, strip-assistant, and strip-both.
+	stripAssistantText: false,
+	stripToolResults: false,
 };
 
 const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {

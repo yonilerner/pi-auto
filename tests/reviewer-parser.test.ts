@@ -57,23 +57,37 @@ describe("parseAssessment", () => {
 		expect(parsed?.rationale).toBe("trimmed");
 	});
 
-	it("rejects invalid risk_level", () => {
-		expect(
-			parseAssessment(
-				`{"risk_level":"very-bad","user_authorization":"high","outcome":"allow","rationale":"x"}`,
-			),
-		).toBeUndefined();
+	it("accepts abbreviated {outcome:allow} form (codex-auto-review uses this for clear low-risk)", () => {
+		const parsed = parseAssessment(`{"outcome":"allow"}`);
+		expect(parsed?.outcome).toBe("allow");
+		expect(parsed?.risk_level).toBe("low");
+		expect(parsed?.user_authorization).toBe("unknown");
+		expect(parsed?.rationale).toBeTruthy();
 	});
 
-	it("rejects invalid user_authorization", () => {
-		expect(
-			parseAssessment(
-				`{"risk_level":"low","user_authorization":"unsure","outcome":"allow","rationale":"x"}`,
-			),
-		).toBeUndefined();
+	it("accepts abbreviated {outcome:deny} form (defaults to high risk)", () => {
+		const parsed = parseAssessment(`{"outcome":"deny"}`);
+		expect(parsed?.outcome).toBe("deny");
+		expect(parsed?.risk_level).toBe("high");
+		expect(parsed?.user_authorization).toBe("unknown");
 	});
 
-	it("rejects invalid outcome", () => {
+	it("falls back to default risk_level when value is invalid", () => {
+		const parsed = parseAssessment(
+			`{"risk_level":"very-bad","user_authorization":"high","outcome":"allow","rationale":"x"}`,
+		);
+		expect(parsed?.outcome).toBe("allow");
+		expect(parsed?.risk_level).toBe("low"); // defaulted because invalid
+	});
+
+	it("falls back to unknown when user_authorization is invalid", () => {
+		const parsed = parseAssessment(
+			`{"risk_level":"low","user_authorization":"unsure","outcome":"allow","rationale":"x"}`,
+		);
+		expect(parsed?.user_authorization).toBe("unknown");
+	});
+
+	it("rejects invalid outcome (the only strictly-required field)", () => {
 		expect(
 			parseAssessment(
 				`{"risk_level":"low","user_authorization":"high","outcome":"maybe","rationale":"x"}`,
@@ -81,12 +95,12 @@ describe("parseAssessment", () => {
 		).toBeUndefined();
 	});
 
-	it("rejects missing rationale", () => {
-		expect(
-			parseAssessment(
-				`{"risk_level":"low","user_authorization":"high","outcome":"allow"}`,
-			),
-		).toBeUndefined();
+	it("supplies a default rationale when missing", () => {
+		const parsed = parseAssessment(
+			`{"risk_level":"low","user_authorization":"high","outcome":"allow"}`,
+		);
+		expect(parsed?.outcome).toBe("allow");
+		expect(parsed?.rationale).toBeTruthy();
 	});
 
 	it("rejects non-JSON garbage", () => {

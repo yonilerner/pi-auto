@@ -5,60 +5,93 @@
 
 import { completeSimple, parseJsonWithRepair, parseStreamingJson } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildCodexAutoReviewSystemPrompt, buildCodexAutoReviewUserPrompt } from "./codex-prompt.ts";
 import { getLatestDigest } from "./digest.ts";
 import { buildReviewerSystemPrompt } from "./policy.ts";
+import { resolveReviewerModel } from "./reviewer-model.ts";
 import { buildTranscript } from "./transcript.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "./types.ts";
 
+import type { Usage } from "@earendil-works/pi-ai";
+
+export interface ReviewResultDiagnostics {
+	/** Where the model came from. */
+	modelSource: "codex-auto-review" | "configured" | "active-fallback";
+	/** Which prompt format we used. */
+	promptFormat: "pi-auto" | "codex-auto-review";
+	/** Wall time of the reviewer LLM call in ms. */
+	latencyMs: number;
+	/** Token usage for the reviewer LLM call. Zero when reviewer didn't run. */
+	usage: Usage;
+	/** Raw text the reviewer emitted, post strip. Useful for debugging parse failures. */
+	rawText: string;
+}
+
 export type ReviewResult =
-	| { kind: "assessed"; assessment: ReviewerAssessment }
-	| { kind: "failed"; reason: string };
+	| { kind: "assessed"; assessment: ReviewerAssessment; diagnostics: ReviewResultDiagnostics }
+	| { kind: "failed"; reason: string; diagnostics?: ReviewResultDiagnostics };
+
+const ZERO_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
 export async function reviewAction(
 	action: ReviewableAction,
 	ctx: ExtensionContext,
 	settings: PiAutoSettings,
 ): Promise<ReviewResult> {
-	const model =
-		ctx.modelRegistry.find(settings.reviewerProvider, settings.reviewerModel) ??
-		(settings.fallbackToActiveModel ? ctx.model : undefined);
-
-	if (!model) {
-		return {
-			kind: "failed",
-			reason: `Reviewer model ${settings.reviewerProvider}/${settings.reviewerModel} not found and no fallback model available`,
-		};
+	const resolved = await resolveReviewerModel(ctx, settings);
+	if ("error" in resolved) {
+		return { kind: "failed", reason: resolved.error };
 	}
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return { kind: "failed", reason: `Reviewer auth failed: ${auth.error}` };
-	}
-	if (!auth.apiKey) {
-		return { kind: "failed", reason: `No API key for reviewer model ${model.provider}/${model.id}` };
-	}
+	const { model, apiKey, headers } = resolved;
+	const modelSource = resolved.source;
 
 	const digestState = getLatestDigest(ctx.sessionManager);
-	const transcript = buildTranscript({
-		sessionManager: ctx.sessionManager,
-		settings,
-		action,
-		digest: digestState?.digest,
-	});
+	const useCodexFormat = resolved.source === "codex-auto-review";
+	const projectInstructions = extractProjectInstructions(ctx.getSystemPrompt?.() ?? "");
 
-	const userPrompt = [
-		"# Transcript",
-		transcript,
-		"",
-		"# Planned Action",
-		`Tool: ${action.toolName}`,
-		`Action payload:`,
-		"```json",
-		safeJson(action.payload),
-		"```",
-		"",
-		"Score this action's risk_level and user_authorization, then derive the outcome. Reply ONLY with the JSON object specified in the output contract.",
-	].join("\n");
+	let systemPrompt: string;
+	let userPrompt: string;
+	if (useCodexFormat) {
+		systemPrompt = buildCodexAutoReviewSystemPrompt(settings.customPolicy);
+		const sessionId = ctx.sessionManager.getSessionId?.() ?? "pi-auto-session";
+		userPrompt = buildCodexAutoReviewUserPrompt({
+			sessionManager: ctx.sessionManager,
+			settings,
+			action,
+			digest: digestState?.digest,
+			sessionId,
+			projectInstructions,
+		});
+	} else {
+		systemPrompt = buildReviewerSystemPrompt(settings.customPolicy);
+		const transcript = buildTranscript({
+			sessionManager: ctx.sessionManager,
+			settings,
+			action,
+			digest: digestState?.digest,
+			projectInstructions,
+		});
+		userPrompt = [
+			"# Transcript",
+			transcript,
+			"",
+			"# Planned Action",
+			`Tool: ${action.toolName}`,
+			`Action payload:`,
+			"```json",
+			safeJson(action.payload),
+			"```",
+			"",
+			"Score this action's risk_level and user_authorization, then derive the outcome. Reply ONLY with the JSON object specified in the output contract.",
+		].join("\n");
+	}
 
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), settings.reviewerTimeoutMs);
@@ -66,11 +99,14 @@ export async function reviewAction(
 	const parentAbort = () => controller.abort();
 	if (ctx.signal) ctx.signal.addEventListener("abort", parentAbort, { once: true });
 
+	const t0 = Date.now();
 	try {
+		// codex-auto-review is fine-tuned for this task at "low" reasoning per OpenAI's blog.
+		const reasoningLevel = useCodexFormat ? "low" : "minimal";
 		const response = await completeSimple(
 			model,
 			{
-				systemPrompt: buildReviewerSystemPrompt(settings.customPolicy),
+				systemPrompt,
 				messages: [
 					{
 						role: "user",
@@ -80,35 +116,57 @@ export async function reviewAction(
 				],
 			},
 			{
-				apiKey: auth.apiKey,
-				headers: auth.headers,
+				apiKey,
+				headers,
 				signal: controller.signal,
 				maxTokens: 4096,
-				reasoning: "minimal",
+				reasoning: reasoningLevel,
 			},
 		);
 
+		const latencyMs = Date.now() - t0;
 		const text = response.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
 			.join("")
 			.trim();
 
+		const diagnostics: ReviewResultDiagnostics = {
+			modelSource,
+			promptFormat: useCodexFormat ? "codex-auto-review" : "pi-auto",
+			latencyMs,
+			usage: response.usage,
+			rawText: text,
+		};
+
 		if (!text) {
-			return { kind: "failed", reason: "Reviewer returned empty response" };
+			return { kind: "failed", reason: "Reviewer returned empty response", diagnostics };
 		}
 
 		const parsed = parseAssessment(text);
 		if (!parsed) {
-			return { kind: "failed", reason: `Reviewer returned unparseable response: ${truncate(text, 200)}` };
+			return {
+				kind: "failed",
+				reason: `Reviewer returned unparseable response: ${truncate(text, 200)}`,
+				diagnostics,
+			};
 		}
-		return { kind: "assessed", assessment: parsed };
+		return { kind: "assessed", assessment: parsed, diagnostics };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		const aborted = controller.signal.aborted;
+		const latencyMs = Date.now() - t0;
+		const diagnostics: ReviewResultDiagnostics = {
+			modelSource,
+			promptFormat: useCodexFormat ? "codex-auto-review" : "pi-auto",
+			latencyMs,
+			usage: ZERO_USAGE,
+			rawText: "",
+		};
 		return {
 			kind: "failed",
 			reason: aborted ? `Reviewer timed out after ${settings.reviewerTimeoutMs}ms` : `Reviewer error: ${msg}`,
+			diagnostics,
 		};
 	} finally {
 		clearTimeout(timeoutId);
@@ -137,22 +195,27 @@ export function parseAssessment(text: string): ReviewerAssessment | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const obj = raw as Record<string, unknown>;
 
-	const risk = obj.risk_level;
-	const userAuth = obj.user_authorization;
+	// Outcome is the only required field. Risk/auth/rationale default to safe
+	// values that match Codex's `parse_guardian_assessment`, so the
+	// abbreviated `{"outcome":"allow"}` form codex-auto-review emits for clear
+	// low-risk actions still parses.
 	const outcome = obj.outcome;
-	const rationale = obj.rationale;
-
-	if (!isRisk(risk)) return undefined;
-	if (!isUserAuth(userAuth)) return undefined;
 	if (!isOutcome(outcome)) return undefined;
-	if (typeof rationale !== "string") return undefined;
 
-	return {
-		risk_level: risk,
-		user_authorization: userAuth,
-		outcome,
-		rationale: rationale.trim(),
-	};
+	const risk = isRisk(obj.risk_level) ? obj.risk_level : outcome === "allow" ? "low" : "high";
+	const userAuth = isUserAuth(obj.user_authorization) ? obj.user_authorization : "unknown";
+
+	let rationale: string;
+	if (typeof obj.rationale === "string" && obj.rationale.trim()) {
+		rationale = obj.rationale.trim();
+	} else {
+		rationale =
+			outcome === "allow"
+				? "Auto-review returned a low-risk allow decision."
+				: "Auto-review returned a deny decision without a rationale.";
+	}
+
+	return { risk_level: risk, user_authorization: userAuth, outcome, rationale };
 }
 
 export function extractJsonObject(text: string): string | undefined {
@@ -192,4 +255,33 @@ function safeJson(value: unknown): string {
 
 function truncate(s: string, n: number): string {
 	return s.length <= n ? s : `${s.slice(0, n)}…`;
+}
+
+/**
+ * Extract `<project_instructions>` blocks from the host's system prompt.
+ *
+ * Pi composes AGENTS.md (and similar files) into the active agent's system
+ * prompt as `<project_instructions path="...">...</project_instructions>` blocks.
+ * The reviewer needs visibility into those constraints so it can recognize
+ * project-level restrictions (e.g. "never write to the shared checkout in a
+ * background session") and refuse semantically-equivalent bypass attempts.
+ *
+ * Returns the concatenated content of all such blocks, each prefixed with its
+ * source path. Returns the empty string if the system prompt is empty or
+ * contains no project-instructions blocks.
+ */
+export function extractProjectInstructions(systemPrompt: string): string {
+	if (!systemPrompt) return "";
+	const blockRe = /<project_instructions(?:\s+path="([^"]*)")?>([\s\S]*?)<\/project_instructions>/g;
+	const blocks: string[] = [];
+	let match: RegExpExecArray | null = blockRe.exec(systemPrompt);
+	while (match !== null) {
+		const path = match[1];
+		const body = (match[2] ?? "").trim();
+		if (body) {
+			blocks.push(path ? `# ${path}\n${body}` : body);
+		}
+		match = blockRe.exec(systemPrompt);
+	}
+	return blocks.join("\n\n");
 }

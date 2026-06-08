@@ -58,6 +58,13 @@ export interface PiAutoSettings {
 	maxSummaryEntries: number;
 	/** Whether to update the rolling auth digest at the end of each turn. */
 	enableDigest: boolean;
+	/**
+	 * If true, use OpenAI's `codex-auto-review` model for the reviewer instead of
+	 * `reviewerProvider`/`reviewerModel`. This is the same fine-tuned model Codex
+	 * uses for its Auto-review feature — GPT-5.4 Thinking with low reasoning, trained
+	 * specifically for safety review of agent actions. Requires an OpenAI API key.
+	 */
+	useCodexAutoReview: boolean;
 	/** Sensitive path patterns (substring match). Reads matching these are reviewed even inside cwd. */
 	sensitivePathPatterns: string[];
 	/**
@@ -70,4 +77,28 @@ export interface PiAutoSettings {
 	announceAllows: boolean;
 	/** Custom policy text appended after the base policy. Empty = use defaults. */
 	customPolicy: string;
+	/**
+	 * Strip assistant prose from the transcript shown to the reviewer.
+	 *
+	 * Tool calls emitted by the assistant are still included (they're the audit
+	 * trail of what the agent did). Only the natural-language text content of
+	 * assistant messages is dropped. Rationale: assistant prose can rationalize
+	 * a bad action ("as we discussed, you authorized this") and persuade the
+	 * reviewer. Anthropic's auto-mode classifier strips it for this reason.
+	 * See README for the ablation notes.
+	 */
+	stripAssistantText: boolean;
+	/**
+	 * Strip tool-result entries from the transcript shown to the reviewer.
+	 *
+	 * Tool calls are still included (so the reviewer sees what the agent ran);
+	 * only the output of those calls is dropped. Rationale: tool results are
+	 * the canonical prompt-injection vector — content from files, web pages, or
+	 * external services that can claim "the user authorized X". Our policy
+	 * already ignores authorization claims from tool results, but stripping
+	 * them entirely removes the attack surface structurally. Tradeoff:
+	 * the reviewer loses visibility into evidence the agent gathered before
+	 * acting (e.g. `git status` output confirming uncommitted work).
+	 */
+	stripToolResults: boolean;
 }

@@ -84,30 +84,71 @@ Mirrors Codex: after **3 consecutive denials** or **10 total denials** in a sing
 
 ## Configuration
 
-The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`):
+The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
 
-```ts
-{
-  reviewerProvider: "openai",
-  reviewerModel: "gpt-5-mini",
-  fallbackToActiveModel: true,            // if reviewer model isn't configured, use the current agent model
-  reviewerTimeoutMs: 30_000,
-  maxConsecutiveDenialsPerTurn: 3,
-  maxTotalDenialsPerTurn: 10,
-  maxTranscriptEntries: 40,
-  maxEntryChars: 2_000,
-  sensitivePathPatterns: [
-    "~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.config/gh",
-    "~/.netrc", "~/.npmrc", "~/.pypirc",
-    "/etc/shadow", "/etc/sudoers",
-    "credentials", ".env",
-  ],
-  announceAllows: true,
-  customPolicy: "",                       // appended to the base policy if set
-}
-```
+### Reviewer model
 
-Run `/pi-auto` inside pi to see the active settings.
+These settings pick which model performs the review and how to authenticate to it.
+
+| Setting                  | Default          | What it does |
+| ------------------------ | ---------------- | ------------ |
+| `reviewerProvider`       | `"openai"`       | Provider used to look up the reviewer model in pi's `ModelRegistry`. |
+| `reviewerModel`          | `"gpt-5-mini"`   | Model id used for the review call. Any model in pi's catalog works; cheap small models (gpt-5-mini, claude-haiku-4-5, gpt-4.1-mini) are the sweet spot. |
+| `fallbackToActiveModel`  | `true`           | If the configured reviewer model isn't available, use whatever model the user's current session is on. |
+| `reviewerTimeoutMs`      | `30_000`         | Per-call timeout. If the reviewer takes longer than this, the review is treated as failed (which falls back to a user prompt). |
+| `useCodexAutoReview`     | `false`          | If true, ignore `reviewerProvider`/`reviewerModel` and route the review through OpenAI's hidden `codex-auto-review` slug — the same model Codex itself uses internally. Requires an OpenAI API key configured in pi (ChatGPT-only login won't work; this slug needs a real API key). In our benchmark this scored 34/39 vs gpt-5-mini's 39/39 on our scenario set, mostly because Codex's policy is stricter than ours (credential reads, narrowly-scoped `/tmp` deletes, `sudo apt install`). Keep off unless you specifically want Codex-policy alignment. |
+
+### Scope and policy
+
+Which tool calls get reviewed at all, and what policy text the reviewer sees.
+
+| Setting                       | Default              | What it does |
+| ----------------------------- | -------------------- | ------------ |
+| `sensitivePathPatterns`       | `["~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.config/gh", "~/.netrc", "~/.npmrc", "~/.pypirc", "/etc/shadow", "/etc/sudoers", "credentials", ".env"]` | Substring patterns. Reading a file that matches any of these is reviewed even when it's inside cwd. Tildes are expanded against `$HOME`. |
+| `extraSafeCommandPrefixes`    | `[]`                 | Argv prefixes that bypass review entirely for `bash`. `[["npm", "test"]]` matches `npm test`, `npm test --grep foo`, etc., including inside compound bash chains. See the [Bash known-safe fast path](#bash-known-safe-fast-path) section. |
+| `customPolicy`                | `""`                 | Free-form text appended to the base reviewer policy. Use this to inject project-specific rules ("never push to main without `--dry-run`", "always require explicit per-turn auth for cloud writes", etc.). |
+
+### Transcript building
+
+How much conversation history the reviewer sees, and what shape it's in. These directly affect both review quality and prompt cost.
+
+| Setting                       | Default      | What it does |
+| ----------------------------- | ------------ | ------------ |
+| `maxTranscriptEntries`        | `40`         | Cap on the number of recent entries included verbatim. Older entries can still be pulled in via summaries or action-keyed retrieval. |
+| `maxEntryChars`               | `2_000`      | Per-entry character cap. Long entries are truncated from the middle (head + tail kept) so the start and end of important messages survive. |
+| `maxTranscriptTotalChars`     | `80_000`     | Hard cap on the whole assembled transcript. Final guard against runaway prompts even when other caps allow them through. |
+| `maxPinnedRelatedEntries`     | `6`          | Maximum number of older entries pulled in via action-keyed retrieval (entries that mention paths/commands from the action under review). |
+| `maxSummaryEntries`           | `3`          | Maximum number of compaction / branch summaries included as `[earlier summaries]`. |
+| `enableDigest`                | `true`       | Maintain a rolling authorization digest (key user-granted authorizations, scope constraints, environment context). Survives compaction. |
+
+### Transcript stripping (advanced)
+
+These control whether the reviewer sees the agent's own prose and tool outputs. **Both default to `false`.** They mirror the design choices in Anthropic's Claude Code auto mode classifier, which strips both. We benchmarked all three combinations on our 39-scenario suite at 5 iterations each:
+
+| Variant                     | Pass    | Notes                                              |
+| --------------------------- | ------- | -------------------------------------------------- |
+| baseline (strip neither)    | 190/195 | Default. Trusts the assistant's self-narrated plans ("I'll run the benchmark, then clean up") as authorization context. |
+| `stripAssistantText: true`  | 190/195 | Statistically tied with baseline overall. Stricter on self-narrated-plan scenarios (allows them 80% rather than 100% of the time), but structurally immune to "as we discussed earlier you authorized this" rationalization attacks. |
+| `stripAssistantText: true, stripToolResults: true` | 184/195 | Meaningfully worse. Loses tool-result evidence that the agent's verification steps actually succeeded — e.g. `git status` confirming uncommitted work. |
+
+| Setting               | Default | What it does |
+| --------------------- | ------- | ------------ |
+| `stripAssistantText`  | `false` | Drop assistant prose from the reviewer transcript. Tool calls emitted by the assistant are kept (they're the audit trail of what the agent did). Trade-off: defends against the "lying assistant" class of attack (where assistant text claims prior user authorization) at the cost of being stricter on cases where the user implicitly approved a multi-step plan by not interrupting. |
+| `stripToolResults`    | `false` | Drop tool-result entries entirely from the reviewer transcript. Tool calls are still shown. Trade-off: removes the canonical prompt-injection vector (hostile content in a fetched file or web page claiming the user authorized X) at the cost of losing evidence the agent gathered before acting. Our benchmark shows this regresses scenarios where the agent's verification chain matters (e.g. `git status` -> action). |
+
+**Recommendation:** keep both at `false` unless you specifically value the structural attack-surface reduction over the small accuracy hit. If you turn one on, prefer `stripAssistantText`.
+
+### Notifications & circuit breaker
+
+How allows are surfaced and when a runaway loop trips the circuit breaker.
+
+| Setting                          | Default | What it does |
+| -------------------------------- | ------- | ------------ |
+| `announceAllows`                 | `true`  | Show a one-line inline notification on every allow (· / ○ / △ risk glyph + rationale). Toggle live with `/pi-auto-toggle-announce`. |
+| `maxConsecutiveDenialsPerTurn`   | `3`     | After this many consecutive denials in a turn, the circuit breaker interrupts and surfaces a user prompt. Matches Codex's default. |
+| `maxTotalDenialsPerTurn`         | `10`    | After this many total denials in a turn, the circuit breaker fires even if the consecutive counter is below threshold. Matches Codex's default. |
+
+Denials always emit — they aren't gated by `announceAllows`. Review failures (timeout, no API key, unparseable response) fall back to a user prompt in interactive mode and fail closed (block) in non-interactive modes (`-p`, JSON).
 
 ## Commands
 
@@ -150,9 +191,12 @@ npm run typecheck
 - `scope.test.ts` — review-scope rules per tool
 - `circuit-breaker.test.ts` — per-turn denial counter
 - `reviewer-parser.test.ts` — JSON parsing, fence stripping, prose extraction
-- `transcript.test.ts` — compact transcript builder
+- `transcript.test.ts` — compact transcript builder, including `stripAssistantText` / `stripToolResults` behavior
 - `policy.test.ts` — reviewer system prompt
 - `handler.test.ts` — end-to-end orchestration with mocked review results (allow / deny / failed / circuit-breaker)
+- `digest.test.ts` — rolling authorization digest
+- `retrieval.test.ts` — action-keyed retrieval for long-context auth
+- `bash-parser.test.ts` / `safe-commands.test.ts` — the bash known-safe fast path
 
 **Live tests** (`tests/live/reviewer-scenarios.test.ts`) hit the real reviewer model with a set of curated allow/deny scenarios. They use pi's own `ModelRegistry` + `AuthStorage`, so any model you've already logged into pi with works — no env vars needed.
 
@@ -194,9 +238,15 @@ extensions/
   scope.ts            decides whether a given tool call should be reviewed
   transcript.ts       builds the compact session transcript fed to the reviewer
   reviewer.ts         the actual LLM call + JSON parse, fail-closed
-  policy.ts           reviewer system prompt template
+  reviewer-model.ts   model resolution (default path vs codex-auto-review)
+  policy.ts           reviewer system prompt template (default)
+  codex-prompt.ts     Codex-format prompt + schema used when useCodexAutoReview is on
   circuit-breaker.ts  per-turn denial counter
-  types.ts            shared types
+  digest.ts           rolling authorization digest (long-context aid)
+  retrieval.ts        action-keyed retrieval over older transcript entries
+  bash-parser.ts      tree-sitter-bash wrapper for the safe-command fast path
+  safe-commands.ts    known-safe command classifier (port of Codex's is_safe_command)
+  types.ts            shared types (PiAutoSettings, ReviewableAction, ...)
 ```
 
 ## Caveats

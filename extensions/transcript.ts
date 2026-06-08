@@ -34,13 +34,29 @@ interface BuildOptions {
 	action: ReviewableAction;
 	/** Current rolling digest text, if any. */
 	digest?: string;
+	/**
+	 * Trustworthy project-instructions context extracted from the host's system
+	 * prompt (e.g. AGENTS.md / CLAUDE.md). Rendered as a `[project instructions]`
+	 * section so the reviewer treats restrictions there as binding constraints.
+	 * Unlike `[tool_result]` or `[assistant]`, this is host-supplied context the
+	 * user installed at the project root — not adversarial transcript content.
+	 */
+	projectInstructions?: string;
 }
 
 export function buildTranscript(opts: BuildOptions): string {
-	const { sessionManager, settings, action, digest } = opts;
+	const { sessionManager, settings, action, digest, projectInstructions } = opts;
 	const branch = sessionManager.getBranch();
-	const allTranscriptEntries = collectTranscriptEntries(branch, settings.maxEntryChars);
+	const allTranscriptEntries = collectTranscriptEntries(branch, settings.maxEntryChars, {
+		stripAssistantText: settings.stripAssistantText,
+		stripToolResults: settings.stripToolResults,
+	});
 	const summaries = collectSummaries(branch);
+
+	// Section 0: trustworthy project-instructions context (AGENTS.md etc).
+	const projectInstructionsSection = projectInstructions?.trim()
+		? `[project instructions]\n${truncateMiddle(projectInstructions.trim(), settings.maxEntryChars * 4)}`
+		: "";
 
 	// Section 1: rolling digest.
 	const digestSection = digest?.trim()
@@ -68,6 +84,7 @@ export function buildTranscript(opts: BuildOptions): string {
 	const omittedOlder = allTranscriptEntries.length - recent.length - pinnedRelated.length;
 
 	const sections: string[] = [];
+	if (projectInstructionsSection) sections.push(projectInstructionsSection);
 	if (digestSection) sections.push(digestSection);
 
 	if (firstUserMessage && !recentIds.has(firstUserMessage.sourceId)) {
@@ -108,7 +125,16 @@ function renderEntry(e: TranscriptEntry): string {
 	return `[${e.role}] ${e.text}`;
 }
 
-function collectTranscriptEntries(branch: unknown[], maxEntryChars: number): TranscriptEntry[] {
+interface CollectOptions {
+	stripAssistantText: boolean;
+	stripToolResults: boolean;
+}
+
+function collectTranscriptEntries(
+	branch: unknown[],
+	maxEntryChars: number,
+	opts: CollectOptions,
+): TranscriptEntry[] {
 	const entries: TranscriptEntry[] = [];
 	for (const entry of branch) {
 		if (!entry || typeof entry !== "object") continue;
@@ -129,8 +155,10 @@ function collectTranscriptEntries(branch: unknown[], maxEntryChars: number): Tra
 		}
 
 		if (msg.role === "assistant") {
-			const text = extractText(msg.content);
-			if (text) entries.push({ role: "assistant", text: truncateMiddle(text, maxEntryChars), sourceId: id });
+			if (!opts.stripAssistantText) {
+				const text = extractText(msg.content);
+				if (text) entries.push({ role: "assistant", text: truncateMiddle(text, maxEntryChars), sourceId: id });
+			}
 
 			if (Array.isArray(msg.content)) {
 				let toolCallIdx = 0;
@@ -149,6 +177,7 @@ function collectTranscriptEntries(branch: unknown[], maxEntryChars: number): Tra
 		}
 
 		if (msg.role === "toolResult") {
+			if (opts.stripToolResults) continue;
 			const text = extractText(msg.content);
 			const toolName = msg.toolName ?? "?";
 			const isError = msg.isError ? " [error]" : "";

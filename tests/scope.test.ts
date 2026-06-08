@@ -15,10 +15,13 @@ const SETTINGS: PiAutoSettings = {
 	maxPinnedRelatedEntries: 6,
 	maxSummaryEntries: 3,
 	enableDigest: false,
+	useCodexAutoReview: false,
 	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: ["~/.ssh", "~/.aws", "/etc/shadow", "credentials", ".env"],
 	announceAllows: true,
 	customPolicy: "",
+	stripAssistantText: false,
+	stripToolResults: false,
 };
 
 const CWD = "/home/me/project";
