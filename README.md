@@ -82,6 +82,26 @@ Extra prefixes also apply inside compound bash chains: with the above, `bash -lc
 
 Mirrors Codex: after **3 consecutive denials** or **10 total denials** in a single turn, pi-auto interrupts the turn and surfaces a prompt to the user explaining why. The user can stop the turn or approve the latest action and continue (one-shot — the breaker still trips on the next runaway loop).
 
+### Pausing the reviewer
+
+When the reviewer denies an action you actually want to run, the simplest escape hatch is `/pi-auto-disable`. While disabled:
+
+- Every tool call bypasses pi-auto entirely — no scope check, no reviewer LLM call, no circuit-breaker accounting.
+- A persistent `pi-auto OFF` indicator appears in the status bar so the off state is hard to miss.
+- The disable is **in-memory only**: a fresh pi launch always starts enabled.
+
+Re-enable with `/pi-auto-enable`. There's no auto-re-enable; if you forget, the status bar reminds you. The intentional verbosity (separate disable/enable commands instead of a toggle) is to make the off state a deliberate choice rather than a fat-fingerable flip.
+
+Typical workflow when a denial blocks something you want:
+
+```
+[reviewer denies rm -rf folder]
+/pi-auto-disable
+please try that again
+[tool runs without review]
+/pi-auto-enable
+```
+
 ## Configuration
 
 The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
@@ -152,7 +172,9 @@ Denials always emit — they aren't gated by `announceAllows`. Review failures (
 
 ## Commands
 
-- `/pi-auto` — show current configuration.
+- `/pi-auto` — show current configuration and whether the reviewer is currently enabled.
+- `/pi-auto-disable` — pause review. All tool calls run without pi-auto until `/pi-auto-enable`. See [Pausing the reviewer](#pausing-the-reviewer).
+- `/pi-auto-enable` — re-enable review.
 - `/pi-auto-toggle-announce` — toggle inline rationale messages for allowed actions.
 
 ## Upstream sync

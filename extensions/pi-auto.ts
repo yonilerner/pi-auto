@@ -72,6 +72,13 @@ export default function (pi: ExtensionAPI): void {
 	const settings: PiAutoSettings = { ...DEFAULT_SETTINGS };
 	const breaker = new CircuitBreaker(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
 
+	// Runtime override: when true, ALL tool calls bypass pi-auto entirely
+	// (no scope check, no reviewer call, no circuit breaker). Set via
+	// /pi-auto-disable, cleared via /pi-auto-enable. In-memory only — a fresh
+	// pi launch always starts enabled. The persistent status bar makes the
+	// off state hard to miss.
+	let disabled = false;
+
 	// Track the current turn so we can scope the circuit breaker per turn.
 	let currentTurnId = "boot";
 	pi.on("turn_start", (event) => {
@@ -91,6 +98,8 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
+		if (disabled) return undefined;
+
 		const scope = decideScope(event, ctx.cwd, settings);
 		if (!scope.review) {
 			return undefined;
@@ -109,7 +118,9 @@ export default function (pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const digestState = getLatestDigest(ctx.sessionManager);
 			const lines = [
-				`pi-auto settings:`,
+				`pi-auto: ${disabled ? "DISABLED — all tool calls run without review" : "enabled"}`,
+				``,
+				`settings:`,
 				`  reviewer:                  ${settings.reviewerProvider}/${settings.reviewerModel}`,
 				`  fallback to active model:  ${settings.fallbackToActiveModel}`,
 				`  timeout:                   ${settings.reviewerTimeoutMs}ms`,
@@ -142,6 +153,40 @@ export default function (pi: ExtensionAPI): void {
 			settings.announceAllows = !settings.announceAllows;
 			if (ctx.hasUI) {
 				ctx.ui.notify(`pi-auto announce-allows: ${settings.announceAllows}`, "info");
+			}
+		},
+	});
+
+	pi.registerCommand("pi-auto-disable", {
+		description:
+			"Pause pi-auto review. All tool calls will run without review until /pi-auto-enable.",
+		handler: async (_args, ctx) => {
+			if (disabled) {
+				if (ctx.hasUI) ctx.ui.notify("pi-auto is already disabled", "info");
+				return;
+			}
+			disabled = true;
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"pi-auto: DISABLED — tool calls will run without review until /pi-auto-enable",
+					"warning",
+				);
+				setDisabledStatus(ctx, true);
+			}
+		},
+	});
+
+	pi.registerCommand("pi-auto-enable", {
+		description: "Re-enable pi-auto review after /pi-auto-disable.",
+		handler: async (_args, ctx) => {
+			if (!disabled) {
+				if (ctx.hasUI) ctx.ui.notify("pi-auto is already enabled", "info");
+				return;
+			}
+			disabled = false;
+			if (ctx.hasUI) {
+				ctx.ui.notify("pi-auto: enabled — review is active", "info");
+				setDisabledStatus(ctx, false);
 			}
 		},
 	});
@@ -282,4 +327,31 @@ function setStatus(ctx: ExtensionContext, text: string | undefined): void {
 
 function clearStatus(ctx: ExtensionContext): void {
 	setStatus(ctx, undefined);
+}
+
+/**
+ * Persistent status-bar indicator shown for as long as pi-auto is disabled.
+ * Uses a different status key than `setStatus` (the transient "reviewing…"
+ * indicator) so the two don't overwrite each other.
+ *
+ * The text is wrapped in ANSI bright-red so the off state visibly stands out
+ * in the status bar. Pi's TUI passes ANSI escapes through (see
+ * `wrapTextWithAnsi` in pi's tui docs); on terminals without color support
+ * the codes are simply ignored and the plain text still appears.
+ */
+function setDisabledStatus(
+	ctx: { hasUI: boolean; ui: { setStatus: (key: string, text: string | undefined) => void } },
+	off: boolean,
+): void {
+	if (!ctx.hasUI) return;
+	const BRIGHT_RED = "\x1b[91m";
+	const RESET = "\x1b[0m";
+	try {
+		ctx.ui.setStatus(
+			"pi-auto-disabled",
+			off ? `${BRIGHT_RED}pi-auto OFF${RESET}` : undefined,
+		);
+	} catch {
+		// older pi versions may not support setStatus in all contexts
+	}
 }
