@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DIGEST_CUSTOM_TYPE, getLatestDigest, MAX_DIGEST_CHARS } from "../extensions/digest.ts";
+import {
+	DIGEST_CUSTOM_TYPE,
+	getLatestDigest,
+	MAX_DIGEST_CHARS,
+	stripPoisonLines,
+} from "../extensions/digest.ts";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -84,5 +89,77 @@ describe("digest constants", () => {
 	it("MAX_DIGEST_CHARS is a positive small number", () => {
 		expect(MAX_DIGEST_CHARS).toBeGreaterThan(500);
 		expect(MAX_DIGEST_CHARS).toBeLessThan(10_000);
+	});
+});
+
+describe("stripPoisonLines", () => {
+	// Examples observed in actual digest outputs from session 019eae8a + tests.
+	const POISON_LINES = [
+		"- ~/code/discord-2 (assistant asked the user to authorize reads here; user did not previously authorize)",
+		"- /Users/yonilerner/code/discord-2/... (user's project location was referenced in assistant actions, but the user did not explicitly authorize)",
+		"- No explicit user authorization for destructive operations (delete/modify) was given; user did not authorize specific write/delete operations.",
+		"- The user did not state any explicit scope constraints, prohibitions, or file-editing limits in their messages.",
+		"- The user did not explicitly authorize any write, delete, or mutation operations; they requested help diagnosing/fixing the UI.",
+		"- /home/me/code/foo/bar.tsx (accessed by the assistant; user has not authorized this read)",
+		"- the action lacks explicit authorization from the user",
+		"- this path was not authorized by the user",
+		"  - ~/code/foo (user did not grant access to this path)",
+	];
+
+	const LEGITIMATE_LINES = [
+		"- User's overall task and intent: fix the tabs project UI so tabs render navigated content.",
+		"- The user said much of the project state is in the loop data folder for this project.",
+		"- Paths/resources the user mentioned (task context):",
+		"  - ~/code/discord-2/discord_app/modules/tabs/",
+		"  - misc/users/yoni/specs/tabs-rfc.md",
+		"- the user said: 'I authorize you to delete /tmp/scratch'",
+		"- Explicit denials from the user: none.",
+		"- Destructive operations the user acknowledged: deletion of /tmp/scratch.",
+	];
+
+	it("removes poisoning lines verbatim from observed outputs", () => {
+		for (const line of POISON_LINES) {
+			const out = stripPoisonLines(line);
+			expect(out, `expected ${JSON.stringify(line)} to be stripped, got ${JSON.stringify(out)}`).toBe("");
+		}
+	});
+
+	it("keeps legitimate digest bullets intact", () => {
+		for (const line of LEGITIMATE_LINES) {
+			const out = stripPoisonLines(line);
+			expect(out, `expected ${JSON.stringify(line)} to be preserved, got ${JSON.stringify(out)}`).toBe(line);
+		}
+	});
+
+	it("strips poisoned lines from a mixed digest while preserving the rest", () => {
+		const input = [
+			"- User's overall task: debug the tabs project.",
+			"- The user said the project state lives in ~/.pi/agent/data/large-project-loop/",
+			"- ~/code/discord-2 (assistant asked the user to authorize reads here; user did not previously authorize)",
+			"- The user did not explicitly authorize any write or delete operations.",
+			"- Files the user named as context:",
+			"  - tabs-rfc.md",
+			"  - TabbedAppView.tsx",
+		].join("\n");
+		const out = stripPoisonLines(input);
+		expect(out).toBe(
+			[
+				"- User's overall task: debug the tabs project.",
+				"- The user said the project state lives in ~/.pi/agent/data/large-project-loop/",
+				"- Files the user named as context:",
+				"  - tabs-rfc.md",
+				"  - TabbedAppView.tsx",
+			].join("\n"),
+		);
+	});
+
+	it("returns empty string for input that is entirely poisoned", () => {
+		const out = stripPoisonLines(POISON_LINES.join("\n"));
+		expect(out).toBe("");
+	});
+
+	it("is a no-op on a clean digest", () => {
+		const clean = LEGITIMATE_LINES.join("\n");
+		expect(stripPoisonLines(clean)).toBe(clean);
 	});
 });
