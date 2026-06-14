@@ -10,12 +10,32 @@ at the bottom of the relevant section.
       `DEFAULT_SETTINGS` in `extensions/pi-auto.ts` and relaunch pi
       ([README §Configuration](README.md#configuration)). Two pieces:
 
-      1. **Persisted config at `$PI_AGENT_DIR/extensions/pi-auto.json`**
-         (resolves to `~/.pi/agent/extensions/pi-auto.json` by default).
-         Read it at extension init, merge over `DEFAULT_SETTINGS`,
-         write it back when the user changes a setting from the UI.
-         Anything not in the file falls through to the default — so
-         partial files (just `reviewerModel`, just `customPolicy`) work.
+      1. **Persisted config at two layers.** Both are JSON, both are
+         partial (only the fields the user sets), both merge over
+         `DEFAULT_SETTINGS`:
+
+         - **User-global:** `$PI_AGENT_DIR/extensions/pi-auto.json`
+           (resolves to `~/.pi/agent/extensions/pi-auto.json` by
+           default). The persistent home for your usual reviewer
+           model, transcript caps, sandbox mode, etc.
+         - **Per-project:** `.agents/pi-auto.json` at the project
+           root (search upward from cwd the same way pi's project-
+           config discovery does). Lets you set
+           `customPolicy` / `environment` / `sandbox.mode` /
+           `sensitivePathPatterns` etc. per repo without polluting
+           your global config. Checked in alongside `AGENTS.md` so
+           the whole team gets the same reviewer behavior.
+
+         Merge precedence (lowest to highest), applied per-field:
+         `DEFAULT_SETTINGS` → user-global JSON → per-project JSON →
+         env-var overrides (see env-var note below). Partial files at
+         any layer are fine — unset fields fall through.
+
+         Read all of these at extension init. The UI writes back to
+         user-global by default; offer an explicit "save to project"
+         toggle in the form for fields that are obviously
+         per-project (`customPolicy`, `environment`,
+         `sensitivePathPatterns`, `extraSafeCommandPrefixes`).
 
       2. **Interactive settings UI inside pi.** Other extensions
          already do this (see pi docs under `docs/tui.md` and the
@@ -27,8 +47,13 @@ at the bottom of the relevant section.
          `reviewerProvider`, `reviewerModel`, `useCodexAutoReview`,
          `reviewerTimeoutMs`, `enableDigest`, `announceAllows`,
          `sensitivePathPatterns`, `extraSafeCommandPrefixes`,
-         `customPolicy`, the circuit-breaker thresholds, and the
-         transcript caps.
+         `customPolicy`, `environment` (see Per-project environment
+         overlay below), `sandbox.mode` plus any other
+         `SandboxSettings` fields, the circuit-breaker thresholds,
+         and the transcript caps. The form should indicate which
+         layer each field is currently loaded from (default /
+         user-global / per-project / env) so users can tell where a
+         value came from.
 
       Notes:
       - Changes from the UI should take effect immediately for the
@@ -39,6 +64,28 @@ at the bottom of the relevant section.
         start enabled).
       - The settings file path should respect `$PI_AGENT_DIR` if
         pi exposes it; otherwise fall back to `~/.pi/agent`.
+      - **Any env-var-driven configuration must also be a settings
+        field, with the env var winning when both are set.** Today
+        `PI_AUTO_USE_CODEX_POLICY` in `extensions/policy.ts` is the
+        only example, but the principle applies to any future env
+        var. Full precedence (lowest to highest):
+        `DEFAULT_SETTINGS` → user-global JSON → per-project JSON →
+        `process.env.PI_AUTO_X`. Env vars are the escape hatch for
+        one-off runs (CI, ad-hoc benchmarks); the settings files are
+        the persistent home. Don't add an env var without a matching
+        field. Document the precedence rule explicitly in the settings
+        reference (README §Configuration) when this ships.
+
+      - **Per-project `environment` field** modeled on Claude Code's
+        [`autoMode.environment`](https://code.claude.com/docs/en/auto-mode-config).
+        A free-form prose field where the user describes their
+        trusted infrastructure (e.g. "we deploy via
+        github.example.com/acme-corp, our buckets are
+        s3://acme-build-artifacts"); the reviewer treats it as
+        evidence about what's internal vs. external when scoring
+        `risk_level`. Lower friction than tightly-coded allow/deny
+        patterns. Composes with `customPolicy` rather than replacing
+        it. Naturally lives in per-project JSON.
 
 ## Reviewer architecture
 
@@ -54,16 +101,6 @@ at the bottom of the relevant section.
       60-scenario × 5-iter suite has a ±2-scenario flake floor, which
       can't reliably detect a 2–3-case recall regression. See the eval
       set entry below.
-
-- [ ] **Per-project policy overlays modeled on Claude Code's
-      [`autoMode.environment`](https://code.claude.com/docs/en/auto-mode-config).**
-      Users describe their trusted infrastructure in prose (e.g. "we
-      deploy via github.example.com/acme-corp, our buckets are
-      s3://acme-build-artifacts"); the reviewer treats those as
-      evidence about what's internal vs. external when scoring
-      `risk_level`. Lower friction than tightly-coded allow/deny
-      patterns. Should compose with `customPolicy` rather than replace
-      it.
 
 ## Eval
 

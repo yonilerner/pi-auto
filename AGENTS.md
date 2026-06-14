@@ -25,3 +25,36 @@ PI_AUTO_LIVE_TESTS=1 npx vitest run tests/live/digest-summarizer.test.ts
 
 Run the whole live suite (`npm run test:live` / `npm run test:live:5x`) only
 when explicitly asked or as a final check.
+
+## Git
+
+Use gitbutler for all git operations in this repo. The skill is at
+[`.agents/skills/gitbutler/SKILL.md`](./.agents/skills/gitbutler/SKILL.md);
+load it before invoking any git command.
+
+## History doc
+
+[`docs/HISTORY.md`](./docs/HISTORY.md) is the canonical record of the
+review system and sandbox: what we built, why, and what we measured. It
+is not a generic changelog.
+
+**Update it when** you make a substantial change to:
+- the reviewer prompt / policy template,
+- the reviewer payload shape (the action JSON, the transcript shape,
+  the retryReason field, etc.),
+- the reviewer model selection or reasoning settings,
+- the sandbox modes, lifecycle, denial handling, or askCallback wiring,
+- the safe-command fast path,
+
+or when you make a new finding about how any of the above behaves
+(e.g. a measured regression, a discovered model failure mode, a
+benchmark result that informs future decisions).
+
+**Do not update it for** unrelated features, refactors that don't
+change behavior, doc/typo fixes, dependency bumps, or routine
+maintenance.
+
+Match the existing style: terse, decision-shaped (one section per
+decision, ideally tied to a commit hash), with concrete numbers where
+available. Forward-looking items go in [`TODO.md`](./TODO.md), not
+here. Settings reference goes in [`README.md`](./README.md), not here.
