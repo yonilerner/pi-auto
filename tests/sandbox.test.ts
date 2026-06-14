@@ -25,6 +25,7 @@ import {
 	buildRetryReason,
 	buildSandboxRuntimeConfig,
 	detectSandboxDenial,
+	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
 	filterNoiseFromAnnotation,
 	getNetworkAttemptsSince,
@@ -299,6 +300,11 @@ PermissionError: [Errno 1] Operation not permitted: '/tmp/pi-agent/sandbox-shoul
 			"</sandbox_violations>",
 		].join("\n");
 		expect(extractDeniedPathFromStderr(annotated)).toBe("/private/tmp/foo/bar");
+		expect(extractDeniedFilesystemViolation(annotated)).toEqual({
+			operation: "file-write-create",
+			access: "write",
+			path: "/private/tmp/foo/bar",
+		});
 	});
 
 	it("also matches file-read-data entries", () => {
@@ -425,6 +431,28 @@ describe("buildRetryReason", () => {
 		);
 		expect(reason).toContain("/etc/passwd");
 		expect(reason).toMatch(/filesystem/i);
+	});
+
+	it("uses the ASRT violation path before a higher-level stderr path", () => {
+		const output = [
+			"sqlite: /Users/me/repo/.git/gitbutler/but.sqlite: Operation not permitted",
+			"<sandbox_violations>",
+			"gitbutler-tauri(123) deny(1) file-write-create /Users/me/repo/.git/gitbutler/but.sqlite-wal",
+			"</sandbox_violations>",
+		].join("\n");
+		const reason = buildRetryReason("filesystem operation denied by sandbox", output, []);
+		expect(reason).toContain("/Users/me/repo/.git/gitbutler/but.sqlite-wal");
+		expect(reason).toContain("file-write-create");
+		expect(reason).not.toMatch(/but\.sqlite[:.]/);
+	});
+
+	it("includes filesystem access type and operation when ASRT reports them", () => {
+		const reason = buildRetryReason(
+			"sandbox denial recorded by ASRT violation store",
+			"<sandbox_violations>\ncat(1) deny(1) file-read-data /etc/secret\n</sandbox_violations>",
+			[],
+		);
+		expect(reason).toBe("Sandbox denied filesystem read access to /etc/secret (file-read-data).");
 	});
 
 	it("falls back to the generic phrase when neither path nor host is known", () => {
