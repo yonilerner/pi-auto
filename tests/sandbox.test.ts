@@ -143,6 +143,30 @@ describe("detectSandboxDenial", () => {
 		expect(out.reason).toMatch(/network/i);
 	});
 
+	it("flags Node listen EPERM as a local bind denial, not filesystem", () => {
+		const stderr = [
+			"Error: listen EPERM: operation not permitted 0.0.0.0",
+			"    at Server.setupListenHandle [as _listen2] (node:net:1915:21)",
+			"  syscall: 'listen',",
+			"  address: '0.0.0.0'",
+		].join("\n");
+		const out = detectSandboxDenial(true, stderr);
+		expect(out.denied).toBe(true);
+		expect(out.reason).toMatch(/bind|listen/i);
+		expect(out.reason).not.toMatch(/filesystem/i);
+	});
+
+	it("flags ASRT network-bind annotations as local bind denials", () => {
+		const annotated = [
+			"<sandbox_violations>",
+			"node(70848) deny(1) network-bind local:*:0",
+			"</sandbox_violations>",
+		].join("\n");
+		const out = detectSandboxDenial(true, annotated);
+		expect(out.denied).toBe(true);
+		expect(out.reason).toMatch(/bind|listen/i);
+	});
+
 	it("flags curl's 'CONNECT tunnel failed' (proxy denied HTTPS CONNECT)", () => {
 		const stderr = "curl: (56) CONNECT tunnel failed, response 403";
 		const out = detectSandboxDenial(true, stderr);
@@ -227,6 +251,17 @@ describe("extractDeniedPathFromStderr", () => {
 	it("returns undefined when the stderr has no 'Operation not permitted' line", () => {
 		const path = extractDeniedPathFromStderr("connection refused\nexit 1");
 		expect(path).toBeUndefined();
+	});
+
+	it("does not mistake Node listen EPERM for a filesystem path", () => {
+		const stderr = [
+			"Error: listen EPERM: operation not permitted 0.0.0.0",
+			"    at Server.setupListenHandle [as _listen2] (node:net:1915:21)",
+			"  code: 'EPERM',",
+			"  syscall: 'listen',",
+			"  address: '0.0.0.0'",
+		].join("\n");
+		expect(extractDeniedPathFromStderr(stderr)).toBeUndefined();
 	});
 
 	it("returns undefined for an empty string", () => {
@@ -350,6 +385,26 @@ describe("buildRetryReason", () => {
 		// e.g. DNS-only failure or raw `nc` by hostname — never reaches the proxy.
 		const reason = buildRetryReason("network denied by sandbox", "", []);
 		expect(reason).toMatch(/sandbox denied network access\./i);
+	});
+
+	it("uses a local socket/listen message for Node listen EPERM", () => {
+		const reason = buildRetryReason(
+			"local socket/listen denied by sandbox",
+			"Error: listen EPERM: operation not permitted /tmp/claude/tsx-501/88742.pipe",
+			[],
+		);
+		expect(reason).toMatch(/local socket\/listen access/i);
+		expect(reason).not.toMatch(/filesystem/i);
+		expect(reason).not.toContain("listen EPERM");
+	});
+
+	it("uses a local socket/listen message for ASRT network-bind annotations", () => {
+		const reason = buildRetryReason(
+			"sandbox denial recorded by ASRT violation store",
+			"<sandbox_violations>\nnode(1) deny(1) network-bind local:*:0\n</sandbox_violations>",
+			[],
+		);
+		expect(reason).toMatch(/local socket\/listen access/i);
 	});
 
 	it("omits ports when the captured attempt has no port", () => {
