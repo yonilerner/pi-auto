@@ -13,6 +13,8 @@
 		"test:watch": "vitest --exclude '**/live/**'",
 		"test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live",
 		"test:live:5x": "PI_AUTO_LIVE_TESTS=1 PI_AUTO_ITERATIONS=5 vitest run tests/live",
+		"eval:live": "tsx scripts/run-live-eval.ts",
+		"eval:compare": "tsx scripts/compare-live-eval.ts",
 		"sync-codex": "tsx scripts/sync-codex.ts"
 	},
 	"pi": {
