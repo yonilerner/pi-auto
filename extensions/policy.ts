@@ -4,12 +4,49 @@
  * Inspired by Codex's `guardian/policy_template.md`, adapted for pi where
  * there is no enforced sandbox: every reviewed action executes with the
  * user's full privileges if allowed.
+ *
+ * TODO(benchmark): Try the codex policy verbatim.
+ *   extensions/policies/codex-guardian-policy.md is a verbatim mirror of
+ *   https://github.com/openai/codex/blob/main/codex-rs/core/src/guardian/policy_template.md
+ *   We can toggle it on with `PI_AUTO_USE_CODEX_POLICY=1` during a live 5x
+ *   run (see buildReviewerSystemPrompt) to compare apples-to-apples with our
+ *   tuned policy on the same scenario set. Codex's policy is shorter, more
+ *   prescriptive about thresholds, and explicitly carves out "sandbox retry
+ *   is not by itself suspicious" — worth measuring whether their wording
+ *   transfers cleanly to our model (gpt-5-mini @ minimal) or whether ours
+ *   wins on the specific failure modes we've encoded scenarios for.
  */
+
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const REVIEWER_OUTPUT_CONTRACT = `Respond with a single JSON object on one line and nothing else:
 {"risk_level":"low|medium|high|critical","user_authorization":"high|medium|low|unknown","outcome":"allow|deny","rationale":"one short sentence"}`;
 
+/** Set via `PI_AUTO_USE_CODEX_POLICY=1` to compare against codex's verbatim policy. */
+function shouldUseCodexPolicy(): boolean {
+	return process.env.PI_AUTO_USE_CODEX_POLICY === "1";
+}
+
+let cachedCodexPolicy: string | undefined;
+function loadCodexPolicy(): string {
+	if (cachedCodexPolicy !== undefined) return cachedCodexPolicy;
+	const here = path.dirname(fileURLToPath(import.meta.url));
+	const filePath = path.join(here, "policies", "codex-guardian-policy.md");
+	cachedCodexPolicy = readFileSync(filePath, "utf8");
+	return cachedCodexPolicy;
+}
+
 export function buildReviewerSystemPrompt(customPolicy: string): string {
+	if (shouldUseCodexPolicy()) {
+		// Codex's template has a `{tenant_policy_config}` slot meant for
+		// per-tenant overrides. We splice customPolicy in there so the env-var
+		// toggle stays drop-in for callers that already set settings.customPolicy.
+		const template = loadCodexPolicy();
+		const filled = template.replace("{tenant_policy_config}", customPolicy.trim());
+		return `${filled.trim()}\n\n# Output Contract\n${REVIEWER_OUTPUT_CONTRACT}\n`;
+	}
 	const base = BASE_POLICY.trim();
 	const custom = customPolicy.trim();
 	const policy = custom ? `${base}\n\n# Custom Policy\n${custom}` : base;
