@@ -311,6 +311,14 @@ export function detectSandboxDenial(
 		["bwrap:", "bubblewrap rejected command"],
 		["seccomp", "seccomp filter denied syscall"],
 		["unix sockets are not permitted", "unix socket denied by sandbox"],
+		// Local listener creation. ASRT reports these under Seatbelt's
+		// network-bind/network-inbound operations, including Unix-domain sockets;
+		// Node surfaces them as `listen EPERM`.
+		["network-bind", "local socket/listen denied by sandbox"],
+		["network-inbound", "local socket/listen denied by sandbox"],
+		["listen eperm", "local socket/listen denied by sandbox"],
+		["syscall: 'listen'", "local socket/listen denied by sandbox"],
+		["syscall: \"listen\"", "local socket/listen denied by sandbox"],
 		// ASRT's HTTP proxy block message:
 		["blocked by sandbox", "blocked by sandbox proxy"],
 		// DNS-blocked-by-sandbox markers. When the sandbox cuts off DNS, runtimes
@@ -548,7 +556,7 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 	const bashShape = /(?:^|\n)\s*[^\n:]+:\s+([^\n:]+):\s+Operation not permitted/i;
 	let m = bashShape.exec(combinedOutput);
 	if (m?.[1]) {
-		const stripped = stripPathQuotes(m[1].trim());
+		const stripped = normalizeDeniedPathCandidate(m[1]);
 		if (stripped) return stripped;
 	}
 	// Shape 2: Python's PermissionError / OSError formatting puts the path
@@ -558,7 +566,7 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 	const pythonShape = /Operation not permitted:\s+['"]?([^'"\n]+?)['"]?(?:\s|$)/i;
 	m = pythonShape.exec(combinedOutput);
 	if (m?.[1]) {
-		const stripped = stripPathQuotes(m[1].trim());
+		const stripped = normalizeDeniedPathCandidate(m[1]);
 		if (stripped) return stripped;
 	}
 	// Shape 3: parse the ASRT violation store directly. The annotated block
@@ -569,9 +577,16 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 	const storeShape = /\bdeny\(\d+\)\s+file-(?:write|read)-[a-z-]+\s+(\S+)/i;
 	m = storeShape.exec(combinedOutput);
 	if (m?.[1]) {
-		return stripPathQuotes(m[1].trim()) || undefined;
+		return normalizeDeniedPathCandidate(m[1]);
 	}
 	return undefined;
+}
+
+function normalizeDeniedPathCandidate(s: string): string | undefined {
+	const stripped = stripPathQuotes(s.trim());
+	if (!stripped) return undefined;
+	if (!looksLikeFilesystemPath(stripped)) return undefined;
+	return stripped;
 }
 
 function stripPathQuotes(s: string): string {
@@ -580,6 +595,10 @@ function stripPathQuotes(s: string): string {
 		out = out.slice(1, -1);
 	}
 	return out.trim();
+}
+
+function looksLikeFilesystemPath(s: string): boolean {
+	return s.startsWith("/") || s.startsWith("~/") || s.startsWith("./") || s.startsWith("../");
 }
 
 /**
@@ -602,6 +621,7 @@ function stripPathQuotes(s: string): string {
  *
  * Returns a string of the form:
  *  - "Sandbox denied network access to api.evil.com:443."
+ *  - "Sandbox denied local socket/listen access."
  *  - "Sandbox denied filesystem access to /etc/passwd."
  *  - "Sandbox denied this command."  (fallback)
  *
@@ -628,6 +648,14 @@ export function buildRetryReason(
 			.map((a) => (a.port !== undefined ? `${a.host}:${a.port}` : a.host))
 			.join(", ");
 		return `Sandbox denied network access to ${formatted}.`;
+	}
+	const denialHaystack = `${denialReason}\n${combinedOutput}`;
+	const isLocalBind =
+		/local (?:network bind|socket)\/listen|network-bind|network-inbound|listen eperm|syscall:\s*['"]listen['"]/i.test(
+			denialHaystack,
+		);
+	if (isLocalBind) {
+		return `Sandbox denied local socket/listen access.`;
 	}
 	const isNetwork = /network|proxy|allowlist/i.test(denialReason);
 	if (isNetwork) {

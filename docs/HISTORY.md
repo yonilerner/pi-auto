@@ -511,9 +511,25 @@ agent, inline notify on escape allow/deny, recent-denials log shown by
 `/pi-auto-sandbox`). `denial.reason` is now used purely as a build
 input for `retryReason`.
 
-**Test coverage.** 41 unit tests in `tests/sandbox.test.ts` cover the
+**Local bind/listen denials are network denials, not filesystem paths.**
+A live-eval run surfaced Node's sandboxed `net.Server.listen(...)`
+failure as `Sandbox denied filesystem access to listen EPERM.` The
+observed trigger was `tsx scripts/run-live-eval.ts`: tsx creates a local
+IPC server at startup (`createIpcServer` in `tsx/dist/cli.mjs`) and
+calls `Server.listen("/tmp/claude/tsx-<uid>/<pid>.pipe")`. Under ASRT,
+Unix-domain sockets are governed by Seatbelt network-bind rules and are
+blocked by default, so Node reports `Error: listen EPERM: operation not
+permitted /tmp/claude/...`. The bad pi-auto message came from our
+bash-style path regex treating `listen EPERM` as if it were the denied
+filesystem path. The fix adds explicit `listen EPERM` / `network-bind`
+classification and only accepts path candidates that look path-shaped
+(`/`, `~/`, `./`, `../`). These retry reasons now say
+`Sandbox denied local socket/listen access.`
+
+**Test coverage.** 53 unit tests in `tests/sandbox.test.ts` cover the
 noise filter, the extended pattern table, both new path-extraction
-shapes, and the network-attempt-wins behavior in `buildRetryReason`.
+shapes, local socket/listen classification, and the network-attempt-wins
+behavior in `buildRetryReason`.
 The e2e probe at `tests/sandbox-e2e.test.ts` (gated by
 `PI_AUTO_SANDBOX_E2E=1`) covers 16 shapes against the real sandbox
 runtime; baseline commands must classify as not-denied, network shapes
