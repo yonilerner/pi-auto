@@ -93,6 +93,19 @@ at the bottom of the relevant section.
         `customPolicy`) against the live scenario set before settling.
         Pick this up alongside eval-set scaling (below).
 
+- [ ] **Show saved values in settings UI confirmations.** The
+      `/pi-auto-settings` save notification currently says e.g.
+      `pi-auto settings: saved Fall back to active model to user-global
+      (/Users/yonilerner/.pi/agent/extensions/pi-auto.json)` without
+      including the value that was saved. Include the rendered value in
+      the confirmation so users can verify at a glance what changed.
+
+- [ ] **Add an explicit settings reload command.** Add a slash command
+      that reloads layered settings from disk and reapplies every
+      side-effecty subsystem, including sandbox runtime reset/reload.
+      This should be the documented way to apply manual JSON edits
+      without toggling a random setting or restarting pi.
+
 ## Reviewer architecture
 
 - [ ] **Two-stage classifier.** Anthropic's auto mode
