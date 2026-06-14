@@ -9,6 +9,82 @@ export type RiskLevel = "low" | "medium" | "high" | "critical";
 export type UserAuthorization = "high" | "medium" | "low" | "unknown";
 export type Outcome = "allow" | "deny";
 
+/**
+ * Sandbox modes for bash tool calls (see README and docs/sandbox.md).
+ *
+ *  - "off":               current behavior. Reviewer gates every bash call, nothing
+ *                        runs in an OS sandbox.
+ *  - "escape-only":      every bash call runs wrapped in the OS sandbox. The
+ *                        reviewer is invoked ONLY when the sandbox denies the
+ *                        command — to decide whether it's safe to re-run the
+ *                        command outside the sandbox.
+ *  - "review-then-escape": every bash call goes through the reviewer first.
+ *                        If the reviewer allows, the command runs wrapped in
+ *                        the OS sandbox. If the sandbox then denies, a second
+ *                        reviewer pass decides whether to escape and run
+ *                        outside.
+ *
+ * read / write / edit tool calls are NOT affected by sandbox mode — they
+ * always go through the existing pi-auto path-scoping reviewer (the OS
+ * sandbox cannot wrap in-process tool calls).
+ */
+export type SandboxMode = "off" | "escape-only" | "review-then-escape";
+
+/**
+ * Subset of `@anthropic-ai/sandbox-runtime`'s SandboxRuntimeConfig that we
+ * expose through PiAutoSettings. We intentionally only surface the fields
+ * that are routinely tuned per-project; everything else is left to the
+ * runtime defaults. The settings object is mapped into a full
+ * SandboxRuntimeConfig inside extensions/sandbox.ts.
+ */
+export interface SandboxSettings {
+	/** Mode. See SandboxMode. */
+	mode: SandboxMode;
+	/**
+	 * Network: allowed domains. Empty array (default) = no network. Supports
+	 * `*.example.com` wildcards. `"*"` allows everything (warning shown).
+	 */
+	allowedDomains: string[];
+	/**
+	 * Network: denied domains. Checked first; takes precedence over allow.
+	 */
+	deniedDomains: string[];
+	/**
+	 * Filesystem: paths the sandbox may read. By default we trust the runtime's
+	 * built-in read defaults (read is allowed everywhere, then the runtime
+	 * applies its own denies for sensitive system locations).
+	 */
+	allowRead: string[];
+	/**
+	 * Filesystem: paths the sandbox is forbidden from reading. Stacks with the
+	 * runtime's built-in sensitive-path denies.
+	 */
+	denyRead: string[];
+	/**
+	 * Filesystem: paths the sandbox may write. Empty array = no writes
+	 * permitted. Default is the current working directory + /tmp.
+	 */
+	allowWrite: string[];
+	/**
+	 * Filesystem: paths the sandbox is forbidden from writing, even when they
+	 * fall inside an allowWrite root. Hard-blocks; never prompted.
+	 */
+	denyWrite: string[];
+	/**
+	 * Status-bar lock indicator when mode != off.
+	 */
+	showStatusIndicator: boolean;
+	/**
+	 * Inline `[sandboxed]` tag on the bash tool-call display.
+	 */
+	annotateBashDisplay: boolean;
+	/**
+	 * On every sandbox denial, even when the reviewer approves the escape,
+	 * surface the violation reason in the UI as a notify.
+	 */
+	alwaysAnnounceDenials: boolean;
+}
+
 export interface ReviewerAssessment {
 	risk_level: RiskLevel;
 	user_authorization: UserAuthorization;
@@ -101,4 +177,10 @@ export interface PiAutoSettings {
 	 * acting (e.g. `git status` output confirming uncommitted work).
 	 */
 	stripToolResults: boolean;
+	/**
+	 * OS-level sandbox configuration. The `mode` sub-field controls whether
+	 * bash tool calls are wrapped, reviewed-then-wrapped, or untouched. See
+	 * SandboxMode and SandboxSettings.
+	 */
+	sandbox: SandboxSettings;
 }

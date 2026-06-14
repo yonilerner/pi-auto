@@ -14,10 +14,27 @@
  * prompts the user, mirroring Codex.
  */
 
-import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ToolCallEvent,
+	ToolCallEventResult,
+	ToolResultEvent,
+} from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
+import {
+	buildRetryReason,
+	checkSandboxAvailability,
+	detectSandboxDenialForCommand,
+	ensureSandboxReady,
+	getNetworkAttemptsSince,
+	runBareCommand,
+	shutdownSandbox,
+	wrapBashCommand,
+	type SandboxState,
+} from "./sandbox.ts";
 import { decideScope } from "./scope.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "./types.ts";
 
@@ -59,6 +76,22 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	// gpt-5-mini across baseline, strip-assistant, and strip-both.
 	stripAssistantText: false,
 	stripToolResults: false,
+	sandbox: {
+		// Default OFF — sandbox wrapping changes how every bash call runs and
+		// existing users should not be surprised. Opt in via settings.sandbox.mode
+		// or the /pi-auto-sandbox slash command.
+		mode: "off",
+		allowedDomains: [],
+		deniedDomains: [],
+		allowRead: [],
+		denyRead: [],
+		// Empty means "use cwd + /tmp" — wired in extensions/sandbox.ts.
+		allowWrite: [],
+		denyWrite: [],
+		showStatusIndicator: true,
+		annotateBashDisplay: true,
+		alwaysAnnounceDenials: true,
+	},
 };
 
 const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {
@@ -67,6 +100,27 @@ const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {
 	high: "△",
 	critical: "✕",
 };
+
+/**
+ * State for the most recent in-flight sandbox-wrapped bash call, keyed by
+ * toolCallId. Populated in `tool_call` when we rewrite a command, read in
+ * `tool_result` to recover the original command + decide whether to escape.
+ *
+ * Map is intentionally unbounded across a session — entries are evicted on
+ * `tool_result`. If a tool_call somehow never gets a tool_result the entry
+ * leaks for the session lifetime; the memory footprint per entry is small
+ * (a string command + small struct).
+ */
+interface WrappedBashState {
+	originalCommand: string;
+	mode: "escape-only" | "review-then-escape";
+	/**
+	 * `Date.now()` captured at tool_call time. Used to scope the
+	 * ASRT-callback-captured network attempts to just this command's lifetime
+	 * when building the escape-review retry_reason in the tool_result handler.
+	 */
+	startTime: number;
+}
 
 export default function (pi: ExtensionAPI): void {
 	const settings: PiAutoSettings = { ...DEFAULT_SETTINGS };
@@ -79,8 +133,58 @@ export default function (pi: ExtensionAPI): void {
 	// off state hard to miss.
 	let disabled = false;
 
+	// Sandbox runtime state. Lazily initialized on first bash call when
+	// settings.sandbox.mode != "off" — but validated at session_start so we
+	// can hard-error early if the host doesn't support the sandbox.
+	const sandboxState: { current: SandboxState } = { current: { kind: "disabled" } };
+	const wrappedBashByToolCallId = new Map<string, WrappedBashState>();
+	// Most-recent sandbox-denial info, surfaced by /pi-auto-sandbox.
+	const recentDenials: Array<{ command: string; reason: string; escapedAllow: boolean; at: number }> = [];
+	const RECENT_DENIAL_CAP = 10;
+
 	// Track the current turn so we can scope the circuit breaker per turn.
 	let currentTurnId = "boot";
+	// Validate sandbox at session start (hard-error policy from interview). We
+	// don't initialize the runtime here — that happens lazily on first bash
+	// call — but we do the availability + dependency check now so a misconfigured
+	// session fails loudly the moment the user launches pi, not on the first
+	// bash command.
+	pi.on("session_start", (_event, ctx) => {
+		if (settings.sandbox.mode === "off") return;
+		const avail = checkSandboxAvailability(settings.sandbox);
+		const broken = !avail.supportedPlatform || avail.errors.length > 0;
+		if (broken) {
+			const msg = [
+				`pi-auto sandbox mode="${settings.sandbox.mode}" but the OS sandbox is unavailable:`,
+				...avail.errors.map((e) => `  - ${e}`),
+				``,
+				`Fix the missing dependencies, or set settings.sandbox.mode = "off".`,
+			].join("\n");
+			if (ctx.hasUI) {
+				ctx.ui.notify(msg, "warning");
+			} else {
+				console.error(msg);
+			}
+			// Mark the sandbox state as broken so every tool_call falls back to a
+			// safe behavior: bash calls block until the user reconfigures.
+			sandboxState.current = { kind: "broken", reason: avail.errors.join("; ") };
+			return;
+		}
+		if (avail.warnings.length > 0 && ctx.hasUI) {
+			ctx.ui.notify(
+				`pi-auto sandbox: ${avail.warnings.join("; ")}`,
+				"info",
+			);
+		}
+		if (ctx.hasUI && settings.sandbox.showStatusIndicator) {
+			setSandboxStatus(ctx, true);
+		}
+	});
+
+	pi.on("session_shutdown", () => {
+		void shutdownSandbox(sandboxState);
+	});
+
 	pi.on("turn_start", (event) => {
 		currentTurnId = `turn-${event.turnIndex}`;
 		breaker.clearTurn(currentTurnId);
@@ -100,6 +204,12 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
 		if (disabled) return undefined;
 
+		// Sandbox branching for bash. Other tools fall through to the existing
+		// scope-based reviewer flow.
+		if (event.toolName === "bash" && settings.sandbox.mode !== "off") {
+			return await handleBashWithSandbox(event, ctx);
+		}
+
 		const scope = decideScope(event, ctx.cwd, settings);
 		if (!scope.review) {
 			return undefined;
@@ -111,6 +221,212 @@ export default function (pi: ExtensionAPI): void {
 
 		return handleReviewResult(result, scope.action, ctx, breaker, settings, currentTurnId);
 	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		if (disabled) return undefined;
+		if (event.toolName !== "bash") return undefined;
+		const wrap = wrappedBashByToolCallId.get(event.toolCallId);
+		if (!wrap) return undefined;
+		wrappedBashByToolCallId.delete(event.toolCallId);
+
+		const combinedOutput = extractTextContent(event);
+		const denial = detectSandboxDenialForCommand(
+			wrap.originalCommand,
+			event.isError,
+			combinedOutput,
+		);
+		if (!denial.denied) return undefined;
+		// Use the ASRT-annotated output (which appends a <sandbox_violations>
+		// block when the violation store had matching entries) so the reviewer
+		// sees the strongest possible evidence about what was denied.
+		const evidence = denial.annotatedOutput;
+
+		// Sandbox denied. Build a terse retry_reason mirroring codex's
+		// orchestrator (see codex-rs/core/src/tools/orchestrator.rs:
+		// build_denial_reason_from_output / Network access to "..." is blocked).
+		// For network: use the host(s) ASRT's askCallback captured during this
+		// command's lifetime. For filesystem: pull the denied path out of stderr
+		// (codex's orchestrator discards it; we keep it). For ambiguous cases
+		// fall back to a generic phrase.
+		const networkAttempts = getNetworkAttemptsSince(wrap.startTime);
+		const retryReason = buildRetryReason(denial.reason, evidence, networkAttempts);
+
+		const escapeAction: ReviewableAction = {
+			toolName: "bash",
+			toolCallId: event.toolCallId,
+			label: `bash: ${truncate(wrap.originalCommand, 200)}`,
+			payload: {
+				tool: "bash",
+				command: wrap.originalCommand,
+				cwd: ctx.cwd,
+				retryReason,
+			},
+		};
+
+		setStatus(ctx, "reviewing sandbox escape…");
+		const reviewResult = await reviewAction(escapeAction, ctx, settings);
+		clearStatus(ctx);
+
+		if (reviewResult.kind === "failed") {
+			recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ false);
+			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+				ctx.ui.notify(
+					`pi-auto sandbox denied + escape reviewer unavailable (${reviewResult.reason}): leaving sandbox error in place`,
+					"warning",
+				);
+			}
+			return undefined;
+		}
+
+		const { assessment } = reviewResult;
+		if (assessment.outcome === "deny") {
+			recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ false);
+			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+				ctx.ui.notify(
+					`pi-auto ✕ sandbox denied + reviewer denied escape (${assessment.risk_level}/${assessment.user_authorization}): ${assessment.rationale}`,
+					"warning",
+				);
+			}
+			// Replace the result content so the agent sees a pi-auto-shaped denial
+			// reason rather than just the raw sandbox stderr.
+			return {
+				content: [
+					{
+						type: "text",
+						text: [
+							`pi-auto sandbox blocked this command and the escape reviewer denied running it outside the sandbox.`,
+							`Sandbox denial: ${denial.reason}`,
+							`Escape rationale: ${assessment.rationale}`,
+							``,
+							`Sandbox output:`,
+							evidence,
+						].join("\n"),
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// Escape allowed — re-run the original command outside the sandbox.
+		recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ true);
+		if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+			ctx.ui.notify(
+				`pi-auto sandbox denied (${denial.reason}); reviewer approved escape: ${assessment.rationale}`,
+				"info",
+			);
+		}
+		setStatus(ctx, "re-running outside sandbox…");
+		try {
+			const bare = await runBareCommand(wrap.originalCommand, ctx.cwd, ctx.signal);
+			clearStatus(ctx);
+			return {
+				content: [
+					{
+						type: "text",
+						text: bare.stdout + (bare.stderr ? `\n[stderr]\n${bare.stderr}` : ""),
+					},
+				],
+				isError: bare.exitCode !== 0,
+			};
+		} catch (err) {
+			clearStatus(ctx);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `pi-auto escape re-run failed: ${err instanceof Error ? err.message : String(err)}`,
+					},
+				],
+				isError: true,
+			};
+		}
+	});
+
+	/**
+	 * Bash handler for sandbox modes "escape-only" and "review-then-escape".
+	 *
+	 * Returns the ToolCallEventResult pi expects. Side effects: mutates
+	 * `event.input.command` to substitute the sandbox-wrapped form; populates
+	 * `wrappedBashByToolCallId` so the tool_result hook can recover the
+	 * original on denial.
+	 */
+	async function handleBashWithSandbox(
+		event: ToolCallEvent,
+		ctx: ExtensionContext,
+	): Promise<ToolCallEventResult | undefined> {
+		if (event.toolName !== "bash") return undefined;
+		const originalCommand = (event.input as { command?: unknown }).command;
+		if (typeof originalCommand !== "string" || !originalCommand.trim()) {
+			return undefined;
+		}
+
+		// Pre-review step for review-then-escape mode. Mirrors the no-sandbox
+		// flow: deterministic safe-command fast path first (via decideScope), then
+		// the LLM reviewer. If the reviewer denies, we block here; the sandbox
+		// wrap is skipped entirely.
+		if (settings.sandbox.mode === "review-then-escape") {
+			const scope = decideScope(event, ctx.cwd, settings);
+			if (scope.review) {
+				setStatus(ctx, `reviewing ${event.toolName}…`);
+				const result = await reviewAction(scope.action, ctx, settings);
+				clearStatus(ctx);
+				const gating = await handleReviewResult(
+					result,
+					scope.action,
+					ctx,
+					breaker,
+					settings,
+					currentTurnId,
+				);
+				if (gating && gating.block === true) return gating;
+			}
+		}
+
+		// Initialize the sandbox lazily on first wrap. We've already validated
+		// availability at session_start, so a failure here is exceptional.
+		const ready = await ensureSandboxReady(settings, ctx.cwd, sandboxState);
+		if (ready.kind !== "ready") {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`pi-auto sandbox unavailable; blocking bash. Reason: ${ready.kind === "broken" ? ready.reason : "not ready"}`,
+					"warning",
+				);
+			}
+			return {
+				block: true,
+				reason: `pi-auto sandbox unavailable: ${ready.kind === "broken" ? ready.reason : "not ready"}`,
+			};
+		}
+
+		try {
+			const wrapped = await wrapBashCommand(originalCommand);
+			// Mutate the event input in place so pi runs the wrapped command. Per
+			// the pi extension docs (tool_call) this is the supported path for
+			// argument patching. The user will see the wrapped form in the bash
+			// tool display — there isn't currently a pi API to display X while
+			// executing Y. annotateBashDisplay is reserved for a future hook.
+			(event.input as { command?: unknown }).command = wrapped;
+			wrappedBashByToolCallId.set(event.toolCallId, {
+				originalCommand,
+				mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
+				startTime: Date.now(),
+			});
+			return undefined;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (ctx.hasUI) {
+				ctx.ui.notify(`pi-auto sandbox wrap failed: ${msg}`, "warning");
+			}
+			return { block: true, reason: `pi-auto sandbox wrap failed: ${msg}` };
+		}
+	}
+
+	function recordDenial(command: string, reason: string, escapedAllow: boolean): void {
+		recentDenials.push({ command, reason, escapedAllow, at: Date.now() });
+		if (recentDenials.length > RECENT_DENIAL_CAP) {
+			recentDenials.splice(0, recentDenials.length - RECENT_DENIAL_CAP);
+		}
+	}
 
 	// Allow user to inspect/tweak settings at runtime.
 	pi.registerCommand("pi-auto", {
@@ -172,6 +488,48 @@ export default function (pi: ExtensionAPI): void {
 					"warning",
 				);
 				setDisabledStatus(ctx, true);
+			}
+		},
+	});
+
+	pi.registerCommand("pi-auto-sandbox", {
+		description: "Show pi-auto sandbox status, current config, and recent denials",
+		handler: async (_args, ctx) => {
+			const s = settings.sandbox;
+			const lines = [
+				`pi-auto sandbox: mode = ${s.mode}`,
+				``,
+				`runtime state: ${sandboxState.current.kind}${
+					sandboxState.current.kind === "broken" ? ` (${sandboxState.current.reason})` : ""
+				}`,
+				``,
+				`network:`,
+				`  allowed domains: ${s.allowedDomains.length ? s.allowedDomains.join(", ") : "(none — no network)"}`,
+				`  denied domains:  ${s.deniedDomains.length ? s.deniedDomains.join(", ") : "(none)"}`,
+				`filesystem:`,
+				`  allow read:      ${s.allowRead.length ? s.allowRead.join(", ") : "(runtime defaults)"}`,
+				`  deny read:       ${s.denyRead.length ? s.denyRead.join(", ") : "(none)"}`,
+				`  allow write:     ${s.allowWrite.length ? s.allowWrite.join(", ") : "(cwd + /tmp — default)"}`,
+				`  deny write:      ${s.denyWrite.length ? s.denyWrite.join(", ") : "(none)"}`,
+				`ui:`,
+				`  status indicator: ${s.showStatusIndicator}`,
+				`  annotate bash:    ${s.annotateBashDisplay}`,
+				`  announce denials: ${s.alwaysAnnounceDenials}`,
+			];
+			if (recentDenials.length > 0) {
+				lines.push("", `recent denials (most recent first):`);
+				for (const d of [...recentDenials].reverse()) {
+					const when = new Date(d.at).toISOString();
+					const outcome = d.escapedAllow ? "escape ALLOWED" : "escape DENIED";
+					lines.push(`  [${when}] ${outcome} (${d.reason}): ${d.command.slice(0, 200)}`);
+				}
+			} else {
+				lines.push("", `recent denials: none`);
+			}
+			if (ctx.hasUI) {
+				ctx.ui.notify(lines.join("\n"), "info");
+			} else {
+				console.log(lines.join("\n"));
 			}
 		},
 	});
@@ -339,6 +697,42 @@ function clearStatus(ctx: ExtensionContext): void {
  * `wrapTextWithAnsi` in pi's tui docs); on terminals without color support
  * the codes are simply ignored and the plain text still appears.
  */
+/**
+ * Sandbox lock indicator. Lives in its own status-bar key so it doesn't
+ * collide with the disabled-state indicator or the transient "reviewing…"
+ * text. ANSI green padlock means sandbox is engaged this session.
+ */
+function setSandboxStatus(
+	ctx: { hasUI: boolean; ui: { setStatus: (key: string, text: string | undefined) => void } },
+	on: boolean,
+): void {
+	if (!ctx.hasUI) return;
+	const GREEN = "\x1b[92m";
+	const RESET = "\x1b[0m";
+	try {
+		ctx.ui.setStatus("pi-auto-sandbox", on ? `${GREEN}·sandbox${RESET}` : undefined);
+	} catch {
+		// older pi versions may not support setStatus in all contexts
+	}
+}
+
+/**
+ * Concatenate the text parts of a tool_result event's content for sandbox
+ * denial-pattern detection. Image content is ignored (bash never emits it
+ * here, but the type allows it).
+ */
+function extractTextContent(event: ToolResultEvent): string {
+	let out = "";
+	for (const c of event.content) {
+		if (c.type === "text") out += c.text;
+	}
+	return out;
+}
+
+function truncate(s: string, n: number): string {
+	return s.length <= n ? s : `${s.slice(0, n)}…`;
+}
+
 function setDisabledStatus(
 	ctx: { hasUI: boolean; ui: { setStatus: (key: string, text: string | undefined) => void } },
 	off: boolean,

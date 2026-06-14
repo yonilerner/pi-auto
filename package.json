@@ -34,6 +34,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
+		"@anthropic-ai/sandbox-runtime": "^0.0.54",
 		"tree-sitter": "^0.25.0",
 		"tree-sitter-bash": "^0.25.1"
 	}
