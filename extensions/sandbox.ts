@@ -102,6 +102,18 @@ export function _resetNetworkAttemptsForTest(): void {
 }
 
 /**
+ * Test-only escape hatch — hands the e2e probe the real production callback
+ * so it can exercise the exact production wiring (not a spy) and see whether
+ * recentNetworkAttempts gets populated end-to-end.
+ */
+export function _recordingAskCallbackForTest(params: {
+	host: string;
+	port: number | undefined;
+}): Promise<boolean> {
+	return recordingAskCallback(params);
+}
+
+/**
  * Probe the host for sandbox availability. Returns the combined platform +
  * dependency-check result. Cheap; safe to call before initializing.
  */
@@ -262,24 +274,62 @@ export async function wrapBashCommand(command: string): Promise<string> {
  * keep this exported so unit tests (and Linux paths without an active
  * violation log monitor) can still detect denials.
  */
+/**
+ * Strong proxy/network markers that survived the violation-store noise
+ * filter — we want to flag the denial even when curl exits 0 (a proxy-
+ * synthesized 403 response is a denial from the user's perspective).
+ */
+const HARD_PROXY_MARKERS: Array<[string, string]> = [
+	// ASRT's actual HTTP proxy response headers (hyphenated, NOT "blocked by
+	// allowlist" with spaces — spent an hour chasing this).
+	["x-proxy-error", "network denied by sandbox"],
+	["blocked-by-allowlist", "network denied by sandbox"],
+	// Older / older-doc spelling, kept for safety.
+	["blocked by network allowlist", "network denied by sandbox"],
+];
+
 export function detectSandboxDenial(
 	isError: boolean,
 	combinedOutput: string,
 ): { denied: boolean; reason: string } {
-	if (!isError) return { denied: false, reason: "" };
 	const lower = combinedOutput.toLowerCase();
+	// Hard proxy markers ALWAYS count, even on exit 0 — the response was
+	// synthesized by ASRT's proxy as a denial regardless of the HTTP status
+	// curl returned.
+	for (const [needle, label] of HARD_PROXY_MARKERS) {
+		if (lower.includes(needle)) {
+			return { denied: true, reason: label };
+		}
+	}
+	if (!isError) return { denied: false, reason: "" };
 	// Order matters: most-specific markers first so we attribute denials to the
 	// most informative reason. The two generic markers ("operation not
 	// permitted" for macOS sandbox-exec, generic strings that ASRT's proxy emits)
 	// are checked last so they only fire when nothing more specific did.
 	const markers: Array<[string, string]> = [
-		["blocked by network allowlist", "network denied by sandbox"],
 		["sandbox-exec:", "sandbox-exec rejected command"],
 		["bwrap:", "bubblewrap rejected command"],
 		["seccomp", "seccomp filter denied syscall"],
 		["unix sockets are not permitted", "unix socket denied by sandbox"],
 		// ASRT's HTTP proxy block message:
 		["blocked by sandbox", "blocked by sandbox proxy"],
+		// DNS-blocked-by-sandbox markers. When the sandbox cuts off DNS, runtimes
+		// surface different messages:
+		//   curl:  "Could not resolve host"
+		//   Node:  "ENOTFOUND" / "getaddrinfo ENOTFOUND"
+		//   Go:    "dial tcp: lookup ...: no such host"
+		//   Python: "gaierror" / "nodename nor servname provided"
+		//          "Errno 8" / "Name or service not known"
+		//   curl HTTPS through CONNECT-proxy denial: "CONNECT tunnel failed"
+		["gaierror", "network denied by sandbox (DNS)"],
+		["enotfound", "network denied by sandbox (DNS)"],
+		["could not resolve host", "network denied by sandbox (DNS)"],
+		["no such host", "network denied by sandbox (DNS)"],
+		["nodename nor servname provided", "network denied by sandbox (DNS)"],
+		["name or service not known", "network denied by sandbox (DNS)"],
+		["connect tunnel failed", "network denied by sandbox (proxy)"],
+		// Node's default fetch / undici error when proxy blocks:
+		["fetch failed", "network denied by sandbox"],
 		// Generic catch-alls (kept last so the more specific markers above win):
 		["operation not permitted", "filesystem operation denied by sandbox"],
 	];
@@ -292,12 +342,93 @@ export function detectSandboxDenial(
 }
 
 /**
+ * Known-noise entries that every sandboxed process on macOS emits whether or
+ * not it tried to do anything denied. We use these to filter the violation
+ * store before deciding the command was denied; without filtering, the
+ * presence of any sandboxed bash command produces "denial" hits and triggers
+ * a spurious escape-review.
+ *
+ * The format matches what ASRT's `annotateStderrWithSandboxFailures` emits,
+ * e.g. `sh(12345) deny(1) sysctl-read kern.iossupportversion`. We check the
+ * substring after the `deny(N) ` marker.
+ *
+ * Keep this list narrow: anything actually informative about what the command
+ * tried to do (network-outbound, file-write-create, file-read-data,
+ * mach-lookup that isn't the SystemConfiguration noise, etc.) must NOT be
+ * filtered.
+ */
+const NOISE_OPERATIONS = [
+	// macOS Seatbelt asks for the version sysctl on every sandboxed exec.
+	"sysctl-read kern.iossupportversion",
+	// Mach-lookups for the system network/DNS config service. Curl, node, and
+	// the Python runtime all do these on startup. They're attempting to read
+	// the system proxy configuration; ASRT denies because the proxy bridge
+	// already substitutes its own. Not a denial of what the command tried to
+	// achieve.
+	"mach-lookup com.apple.SystemConfiguration.configd",
+	"mach-lookup com.apple.SystemConfiguration.DNSConfiguration",
+	"mach-lookup com.apple.SystemConfiguration.SCNetworkReachability",
+];
+
+/**
+ * Test-only: expose the noise table so the e2e and unit tests can assert
+ * the filter applies. Don't mutate the returned array.
+ */
+export function _noiseOperationsForTest(): readonly string[] {
+	return NOISE_OPERATIONS;
+}
+
+/**
+ * Strip the `<sandbox_violations>...</sandbox_violations>` block from an
+ * annotated stderr, drop lines whose deny-operation matches NOISE_OPERATIONS,
+ * and re-emit the block. If after filtering the block is empty, return the
+ * `original` (pre-annotation) text VERBATIM so callers' equality check
+ * (`annotated !== combinedOutput`) sees no difference and skips the denial
+ * path.
+ *
+ * `original` is required for the noise-only case: trimming whitespace from
+ * `annotated.slice(0, blockStart)` looks correct but corrupts the equality
+ * check whenever ASRT injects the block on a fresh line (which is always).
+ * Returning the verbatim original avoids that whole class of bug.
+ *
+ * Pure string transform; safe to run on annotated output that has no block
+ * (returns it unchanged).
+ */
+export function filterNoiseFromAnnotation(annotated: string, original: string): string {
+	const openTag = "<sandbox_violations>";
+	const closeTag = "</sandbox_violations>";
+	const start = annotated.indexOf(openTag);
+	if (start < 0) return annotated;
+	const end = annotated.indexOf(closeTag, start);
+	if (end < 0) return annotated;
+	const before = annotated.slice(0, start);
+	const after = annotated.slice(end + closeTag.length);
+	const body = annotated.slice(start + openTag.length, end);
+	const kept: string[] = [];
+	for (const line of body.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		if (NOISE_OPERATIONS.some((needle) => trimmed.includes(needle))) continue;
+		kept.push(line);
+	}
+	if (kept.length === 0) {
+		// Nothing meaningful in the block — hand back the verbatim original so
+		// the equality check in detectSandboxDenialForCommand passes through.
+		return original;
+	}
+	const newBody = `\n${kept.join("\n")}\n`;
+	return `${before}${openTag}${newBody}${closeTag}${after}`;
+}
+
+/**
  * Authoritative sandbox-denial check, used in production. Combines:
  *
- *  1. The ASRT violation store (via `annotateStderrWithSandboxFailures`).
- *     This is the source of truth on macOS — a non-empty annotation means
- *     the syslog-tailing log monitor recorded a sandbox kernel denial for
- *     this exact command.
+ *  1. The ASRT violation store (via `annotateStderrWithSandboxFailures`),
+ *     filtered through `filterNoiseFromAnnotation` to drop the macOS Seatbelt
+ *     sysctl/mach-lookup noise that every sandboxed bash process emits.
+ *     This is the source of truth on macOS — after filtering, a non-empty
+ *     annotation means the log monitor recorded a meaningful sandbox denial
+ *     for this command (network-outbound, file-write-create, etc.).
  *  2. The text-pattern fallback in `detectSandboxDenial`. Needed because:
  *     - network denials often produce empty stderr + non-zero exit (the proxy
  *       returns a transport-layer error before any text is emitted),
@@ -312,10 +443,11 @@ export function detectSandboxDenialForCommand(
 	isError: boolean,
 	combinedOutput: string,
 ): { denied: boolean; reason: string; annotatedOutput: string } {
-	const annotated = SandboxManager.annotateStderrWithSandboxFailures(
+	const rawAnnotated = SandboxManager.annotateStderrWithSandboxFailures(
 		originalCommand,
 		combinedOutput,
 	);
+	const annotated = filterNoiseFromAnnotation(rawAnnotated, combinedOutput);
 	const hasStoreViolations = annotated !== combinedOutput;
 	if (hasStoreViolations) {
 		// Try to surface a more specific reason from the annotation when possible;
@@ -410,14 +542,44 @@ export async function runBareCommand(
  * we don't have to.
  */
 export function extractDeniedPathFromStderr(combinedOutput: string): string | undefined {
-	// Match `<tool>: <path>: Operation not permitted` (case-insensitive on the
-	// suffix to be robust). Capture the path between the two colons.
-	const re = /(?:^|\n)\s*[^\n:]+:\s+([^\n:]+):\s+Operation not permitted/i;
-	const m = re.exec(combinedOutput);
-	if (!m) return undefined;
-	const path = m[1]?.trim();
-	if (!path) return undefined;
-	return path;
+	// Shape 1: bash redirection / cat / tee on macOS.
+	//   `/bin/bash: /Users/me/.ssh/test: Operation not permitted`
+	//   `cat: /etc/passwd: Operation not permitted`
+	const bashShape = /(?:^|\n)\s*[^\n:]+:\s+([^\n:]+):\s+Operation not permitted/i;
+	let m = bashShape.exec(combinedOutput);
+	if (m?.[1]) {
+		const stripped = stripPathQuotes(m[1].trim());
+		if (stripped) return stripped;
+	}
+	// Shape 2: Python's PermissionError / OSError formatting puts the path
+	// AFTER "Operation not permitted":
+	//   `PermissionError: [Errno 1] Operation not permitted: '/tmp/foo'`
+	//   `OSError: [Errno 13] Permission denied: '/tmp/foo'`
+	const pythonShape = /Operation not permitted:\s+['"]?([^'"\n]+?)['"]?(?:\s|$)/i;
+	m = pythonShape.exec(combinedOutput);
+	if (m?.[1]) {
+		const stripped = stripPathQuotes(m[1].trim());
+		if (stripped) return stripped;
+	}
+	// Shape 3: parse the ASRT violation store directly. The annotated block
+	// includes lines like:
+	//   `python3.11(12345) deny(1) file-write-create /private/tmp/foo`
+	// This is the cleanest signal when stderr formatting doesn't fit either
+	// shape above (or the operation was caught before any stderr was written).
+	const storeShape = /\bdeny\(\d+\)\s+file-(?:write|read)-[a-z-]+\s+(\S+)/i;
+	m = storeShape.exec(combinedOutput);
+	if (m?.[1]) {
+		return stripPathQuotes(m[1].trim()) || undefined;
+	}
+	return undefined;
+}
+
+function stripPathQuotes(s: string): string {
+	let out = s;
+	if ((out.startsWith("'") && out.endsWith("'")) || (out.startsWith('"') && out.endsWith('"'))) {
+		out = out.slice(1, -1);
+	}
+	return out.trim();
 }
 
 /**
@@ -456,13 +618,18 @@ export function buildRetryReason(
 	combinedOutput: string,
 	networkAttempts: NetworkAttempt[],
 ): string {
-	const isNetwork = /network|proxy|allowlist/i.test(denialReason);
-	if (isNetwork && networkAttempts.length > 0) {
+	// If recordingAskCallback captured one or more host attempts during this
+	// command's window, it WAS network by definition — don't gate on text
+	// classification. The earlier shape (gating on a text isNetwork test)
+	// dropped the host info whenever the denial label came from the violation
+	// store as the generic "sandbox denial recorded by ASRT violation store".
+	if (networkAttempts.length > 0) {
 		const formatted = networkAttempts
 			.map((a) => (a.port !== undefined ? `${a.host}:${a.port}` : a.host))
 			.join(", ");
 		return `Sandbox denied network access to ${formatted}.`;
 	}
+	const isNetwork = /network|proxy|allowlist/i.test(denialReason);
 	if (isNetwork) {
 		return `Sandbox denied network access.`;
 	}

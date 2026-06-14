@@ -123,9 +123,11 @@ Interactive form, opened with the slash command. The flow:
 
 1. Pick which layer to edit (user-global or per-project).
 2. Pick a field; each row shows the field's current effective value plus the layer it loaded from (so you can see at a glance when you're editing a field that's already shadowed by a higher-precedence layer).
-3. The editor depends on the field type: boolean / enum fields show a small picker, text / number / list fields open a single-line input.
+3. The editor depends on the field type: boolean / enum fields show a small picker, string / number fields open a single-line input.
 
-Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. `extraSafeCommandPrefixes` is the one field not in the form (nested argv arrays); edit it in JSON directly.
+Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required.
+
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -135,7 +137,7 @@ These settings pick which model performs the review and how to authenticate to i
 | ------------------------ | ---------------- | ------------ |
 | `reviewerProvider`       | `"openai"`       | Provider used to look up the reviewer model in pi's `ModelRegistry`. |
 | `reviewerModel`          | `"gpt-5-mini"`   | Model id used for the review call. Any model in pi's catalog works; cheap small models (gpt-5-mini, claude-haiku-4-5, gpt-4.1-mini) are the sweet spot. |
-| `fallbackToActiveModel`  | `true`           | If the configured reviewer model isn't available, use whatever model the user's current session is on. |
+| `fallbackToActiveModel`  | `false`          | If the configured reviewer model isn't available, fall back to whatever model the user's current session is on. Default is `false` because an unintended fallback on a typo or outage is usually worse than the reviewer failing closed (which falls back to a user prompt anyway). Opt in via `/pi-auto-settings` if you want auto-fallback. |
 | `reviewerTimeoutMs`      | `30_000`         | Per-call timeout. If the reviewer takes longer than this, the review is treated as failed (which falls back to a user prompt). |
 | `useCodexAutoReview`     | `false`          | If true, ignore `reviewerProvider`/`reviewerModel` and route the review through OpenAI's hidden `codex-auto-review` slug — the same model Codex itself uses internally. Requires an OpenAI API key configured in pi (ChatGPT-only login won't work; this slug needs a real API key). In our benchmark this scored 34/39 vs gpt-5-mini's 39/39 on our scenario set, mostly because Codex's policy is stricter than ours (credential reads, narrowly-scoped `/tmp` deletes, `sudo apt install`). Keep off unless you specifically want Codex-policy alignment. |
 | `reviewerPolicySource`   | `"default"`      | `"default"` uses pi-auto's tuned policy; `"codex-verbatim"` swaps in codex's published guardian policy template verbatim (mirrored at `extensions/policies/codex-guardian-policy.md`). Mainly for benchmarks — our policy beat codex's on our scenario set; see `docs/HISTORY.md`. Override with the env var `PI_AUTO_USE_CODEX_POLICY=1` (sets `"codex-verbatim"`) / `=0` (sets `"default"`); the env var wins over the settings file. |

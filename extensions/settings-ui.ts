@@ -25,10 +25,17 @@
  *      change takes effect for the current session without a relaunch.
  *
  * Out of scope for v1 (see TODO.md):
- *   - `extraSafeCommandPrefixes` (nested argv arrays). Editable via the JSON
+ *   - List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`,
+ *     the sandbox `allowedDomains` / `deniedDomains` / `allowRead` /
+ *     `denyRead` / `allowWrite` / `denyWrite` arrays). Editable via the JSON
  *     file directly.
+ *   - `customPolicy` (free-form prose appended to the base policy). Single-
+ *     line input is the wrong shape for it; the JSON file is.
  *   - `environment` (Claude Code-style prose infrastructure overlay). Wired
  *     when we add the field — not yet in PiAutoSettings.
+ *
+ *   The form intentionally only handles scalar / boolean / enum fields to
+ *   keep the UI predictable.
  */
 
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
@@ -84,7 +91,7 @@ interface FieldDescriptor {
 	id: string;
 	label: string;
 	help?: string;
-	kind: "bool" | "string" | "number" | "stringList" | "enum";
+	kind: "bool" | "string" | "number" | "enum";
 	enumValues?: readonly string[];
 	/** Read the current effective display value as a string. */
 	read: (settings: PiAutoSettings) => string;
@@ -162,26 +169,6 @@ const FIELDS: FieldDescriptor[] = [
 		settingsKey: "reviewerTimeoutMs",
 		read: (s) => String(s.reviewerTimeoutMs),
 		applyChange: (_s, raw) => parseNumber(raw, { min: 500 }),
-	},
-
-	// Scope and policy
-	{
-		id: "customPolicy",
-		label: "Custom policy text",
-		help: "Free-form text appended after the base policy.",
-		kind: "string",
-		settingsKey: "customPolicy",
-		read: (s) => previewString(s.customPolicy),
-		applyChange: (_s, raw) => raw,
-	},
-	{
-		id: "sensitivePathPatterns",
-		label: "Sensitive path patterns",
-		help: "Substring patterns; reading these is reviewed even inside cwd. Comma-separated.",
-		kind: "stringList",
-		settingsKey: "sensitivePathPatterns",
-		read: (s) => s.sensitivePathPatterns.join(", "),
-		applyChange: (_s, raw) => parseStringList(raw),
 	},
 
 	// Transcript shaping
@@ -294,57 +281,6 @@ const FIELDS: FieldDescriptor[] = [
 		},
 	},
 	{
-		id: "sandbox.allowedDomains",
-		label: "Sandbox: allowed domains",
-		help: "Comma-separated; '*' allows everything; '*.example.com' wildcards supported.",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.allowedDomains.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, allowedDomains: parseStringList(raw) }),
-	},
-	{
-		id: "sandbox.deniedDomains",
-		label: "Sandbox: denied domains",
-		help: "Checked first; takes precedence over allow. Comma-separated.",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.deniedDomains.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, deniedDomains: parseStringList(raw) }),
-	},
-	{
-		id: "sandbox.allowRead",
-		label: "Sandbox: extra read-allow paths",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.allowRead.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, allowRead: parseStringList(raw) }),
-	},
-	{
-		id: "sandbox.denyRead",
-		label: "Sandbox: read-deny paths",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.denyRead.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, denyRead: parseStringList(raw) }),
-	},
-	{
-		id: "sandbox.allowWrite",
-		label: "Sandbox: extra write-allow paths",
-		help: "Empty = use cwd + /tmp (defaults).",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.allowWrite.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, allowWrite: parseStringList(raw) }),
-	},
-	{
-		id: "sandbox.denyWrite",
-		label: "Sandbox: write-deny paths",
-		kind: "stringList",
-		settingsKey: "sandbox",
-		read: (s) => s.sandbox.denyWrite.join(", "),
-		applyChange: (s, raw) => ({ ...s.sandbox, denyWrite: parseStringList(raw) }),
-	},
-	{
 		id: "sandbox.showStatusIndicator",
 		label: "Sandbox: status-bar indicator",
 		kind: "bool",
@@ -380,6 +316,12 @@ export interface SettingsUIDeps {
 	getPaths: () => { userGlobal: string | null; perProject: string | null };
 	setPaths: (next: { userGlobal: string | null; perProject: string | null }) => void;
 	defaults: PiAutoSettings;
+	/**
+	 * Optional hook fired after every successful save + reload. Use it to
+	 * reconcile side-effecty subsystems (sandbox runtime, status indicator,
+	 * circuit breaker thresholds, etc.) that observe settings but don't poll.
+	 */
+	onSettingsApplied?: (ctx: ExtensionContext) => Promise<void> | void;
 }
 
 export function registerSettingsCommand(pi: ExtensionAPI, deps: SettingsUIDeps): void {
@@ -449,14 +391,20 @@ async function editLoop(
 	layer: EditableLayer,
 	deps: SettingsUIDeps,
 ): Promise<void> {
+	// Remember the field the user last interacted with so an esc out of the
+	// per-field editor (or a successful save) reopens the field list with the
+	// same row selected, instead of bouncing back to the top.
+	let lastFieldId: string | undefined;
 	for (;;) {
-		const picked = await pickField(ctx, layer, deps);
+		const picked = await pickField(ctx, layer, deps, lastFieldId);
 		if (!picked) return; // esc closes the whole UI
+		lastFieldId = picked.id;
 		const ok = await editField(ctx, layer, picked, deps);
-		if (ok === "saved") {
+			if (ok === "saved") {
 			// Reload settings so the next iteration's display reflects the change
 			// and any other layer that shadows this field shows up correctly.
 			reloadSettings(ctx, deps);
+			if (deps.onSettingsApplied) await deps.onSettingsApplied(ctx);
 		}
 	}
 }
@@ -465,23 +413,37 @@ async function pickField(
 	ctx: ExtensionContext,
 	layer: EditableLayer,
 	deps: SettingsUIDeps,
+	initialFieldId?: string,
 ): Promise<FieldDescriptor | null> {
 	const settings = deps.getSettings();
 	const layers = deps.getLayers();
+	// Items are split into a short label (the field's display name) and a
+	// longer description carrying the current value, layer attribution, and
+	// any help text. Earlier versions packed the value into the label, which
+	// truncated mid-value once the field name got longer than the primary
+	// column — "defaul" instead of "default", "f" instead of "false". The
+	// description column has much more headroom, so the value lives there
+	// and the primary column stays clean.
 	const items: SelectItem[] = FIELDS.map((f) => {
 		const current = f.read(settings);
 		const currentLayer = layers[f.settingsKey];
 		const shadowedNote = isShadowed(currentLayer, layer)
-			? ` (currently overridden by ${currentLayer})`
+			? ` (overridden by ${currentLayer})`
 			: "";
 		const help = f.help ? ` — ${f.help}` : "";
 		return {
 			value: f.id,
-			label: `${f.label}: ${current}`,
-			description: `[${currentLayer}]${shadowedNote}${help}`,
+			label: f.label,
+			description: `= ${current}  [${currentLayer}]${shadowedNote}${help}`,
 		};
 	});
 	const layerLabel = layer === "user-global" ? "user-global" : "per-project";
+	const initialIndex = initialFieldId
+		? Math.max(
+			0,
+			items.findIndex((it) => it.value === initialFieldId),
+		)
+		: 0;
 	return await ctx.ui.custom<FieldDescriptor | null>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
@@ -492,7 +454,14 @@ async function pickField(
 				0,
 			),
 		);
-		const list = new SelectList(items, Math.min(items.length, 16), makeSelectTheme(theme));
+		// Allow the primary (label) column to take up to ~40 cols so the longest
+		// field names ("Sandbox: always announce denials" ≈ 32 chars) aren't
+		// truncated. The description column flows from there onward.
+		const list = new SelectList(items, Math.min(items.length, 16), makeSelectTheme(theme), {
+			minPrimaryColumnWidth: 24,
+			maxPrimaryColumnWidth: 40,
+		});
+		if (initialIndex > 0) list.setSelectedIndex(initialIndex);
 		list.onSelect = (item) => {
 			const f = FIELDS.find((d) => d.id === item.value);
 			done(f ?? null);
@@ -577,11 +546,13 @@ async function pickFromList(
 		value: v,
 		label: v + (v === current ? "  (current)" : ""),
 	}));
+	const currentIndex = items.findIndex((item) => item.value === current);
 	return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
 		const list = new SelectList(items, Math.min(items.length, 8), makeSelectTheme(theme));
+		if (currentIndex > 0) list.setSelectedIndex(currentIndex);
 		list.onSelect = (item) => done(String(item.value));
 		list.onCancel = () => done(null);
 		container.addChild(list);
@@ -651,12 +622,6 @@ function reloadSettings(ctx: ExtensionContext, deps: SettingsUIDeps): void {
 
 /* -------- helpers -------- */
 
-function previewString(s: string): string {
-	if (s.length === 0) return "(empty)";
-	if (s.length <= 60) return s;
-	return `${s.slice(0, 57)}…`;
-}
-
 function parseBool(raw: string): boolean {
 	const lower = raw.trim().toLowerCase();
 	if (lower === "true" || lower === "1" || lower === "yes" || lower === "on") return true;
@@ -676,13 +641,6 @@ function parseNumber(raw: string, opts: { min?: number; max?: number } = {}): nu
 		throw new Error(`value must be <= ${opts.max}`);
 	}
 	return n;
-}
-
-function parseStringList(raw: string): string[] {
-	return raw
-		.split(",")
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
 }
 
 function isShadowed(currentLayer: SettingsLayer, editingLayer: EditableLayer): boolean {

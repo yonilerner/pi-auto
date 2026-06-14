@@ -38,12 +38,16 @@ import {
 import { decideScope } from "./scope.ts";
 import { registerSettingsCommand } from "./settings-ui.ts";
 import { loadSettings } from "./settings-store.ts";
-import type { PiAutoSettings, ReviewableAction, ReviewerAssessment, SettingsLayerMap } from "./types.ts";
+import type { PiAutoSettings, ReviewableAction, ReviewerAssessment, SandboxMode, SettingsLayerMap } from "./types.ts";
 
 const DEFAULT_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
-	fallbackToActiveModel: true,
+	// Default false: an unintended fallback to the session model on a typo or
+	// outage is usually worse than the reviewer failing closed (we fall back
+	// to a user prompt). Users who want auto-fallback can opt in via
+	// /pi-auto-settings.
+	fallbackToActiveModel: false,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
 	maxTotalDenialsPerTurn: 10,
@@ -80,10 +84,12 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	stripAssistantText: false,
 	stripToolResults: false,
 	sandbox: {
-		// Default OFF — sandbox wrapping changes how every bash call runs and
-		// existing users should not be surprised. Opt in via settings.sandbox.mode
-		// or the /pi-auto-sandbox slash command.
-		mode: "off",
+		// Default escape-only — every bash call runs wrapped, the reviewer is
+		// only invoked when the sandbox denies. This is the cheapest of the two
+		// "on" modes and gives you the OS-level backstop on a fresh install.
+		// Set to "off" via /pi-auto-settings if you want the prior behavior
+		// (no wrapping; reviewer gates everything).
+		mode: "escape-only",
 		allowedDomains: [],
 		deniedDomains: [],
 		allowRead: [],
@@ -150,6 +156,10 @@ export default function (pi: ExtensionAPI): void {
 	// settings.sandbox.mode != "off" — but validated at session_start so we
 	// can hard-error early if the host doesn't support the sandbox.
 	const sandboxState: { current: SandboxState } = { current: { kind: "disabled" } };
+	// Last sandbox mode for which we reconciled status indicator + warnings.
+	// Used in applySandboxMode() to decide whether a change actually happened
+	// (and whether to announce it).
+	let appliedSandboxMode: SandboxMode = "off";
 	const wrappedBashByToolCallId = new Map<string, WrappedBashState>();
 	// Most-recent sandbox-denial info, surfaced by /pi-auto-sandbox.
 	const recentDenials: Array<{ command: string; reason: string; escapedAllow: boolean; at: number }> = [];
@@ -162,7 +172,7 @@ export default function (pi: ExtensionAPI): void {
 	// call — but we do the availability + dependency check now so a misconfigured
 	// session fails loudly the moment the user launches pi, not on the first
 	// bash command.
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		// Load layered settings before anything else looks at them. Subsequent
 		// session_start handlers (sandbox availability, UI) will see merged
 		// settings. Errors and warnings surface as ui.notify.
@@ -176,40 +186,105 @@ export default function (pi: ExtensionAPI): void {
 		// Rebind the breaker thresholds in case the loaded settings changed them.
 		breaker.setThresholds(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
 
-		if (settings.sandbox.mode === "off") return;
-		const avail = checkSandboxAvailability(settings.sandbox);
-		const broken = !avail.supportedPlatform || avail.errors.length > 0;
-		if (broken) {
-			const msg = [
-				`pi-auto sandbox mode="${settings.sandbox.mode}" but the OS sandbox is unavailable:`,
-				...avail.errors.map((e) => `  - ${e}`),
-				``,
-				`Fix the missing dependencies, or set settings.sandbox.mode = "off".`,
-			].join("\n");
-			if (ctx.hasUI) {
-				ctx.ui.notify(msg, "warning");
-			} else {
-				console.error(msg);
-			}
-			// Mark the sandbox state as broken so every tool_call falls back to a
-			// safe behavior: bash calls block until the user reconfigures.
-			sandboxState.current = { kind: "broken", reason: avail.errors.join("; ") };
-			return;
-		}
-		if (avail.warnings.length > 0 && ctx.hasUI) {
-			ctx.ui.notify(
-				`pi-auto sandbox: ${avail.warnings.join("; ")}`,
-				"info",
-			);
-		}
-		if (ctx.hasUI && settings.sandbox.showStatusIndicator) {
-			setSandboxStatus(ctx, true);
-		}
+		await applySandboxMode(ctx, { source: "session-start" });
 	});
 
 	pi.on("session_shutdown", () => {
 		void shutdownSandbox(sandboxState);
 	});
+
+	/**
+	 * Reconcile the OS sandbox runtime + status indicator + announcements
+	 * with the current `settings.sandbox.mode`. Called once at session_start
+	 * and again after any /pi-auto-settings save. Idempotent.
+	 *
+	 * Announcement rules:
+	 *   - source = "session-start": always announce the active mode (warning
+	 *     when OFF so the off posture is visible; info when on).
+	 *   - source = "settings-change": announce only on actual mode transition
+	 *     (so editing unrelated settings doesn't re-notify).
+	 */
+	async function applySandboxMode(
+		ctx: ExtensionContext,
+		opts: { source: "session-start" | "settings-change" },
+	): Promise<void> {
+		const desired = settings.sandbox.mode;
+		const previous = appliedSandboxMode;
+
+		if (desired === "off") {
+			// Tear down any existing runtime. shutdownSandbox is a no-op if not
+			// initialized.
+			await shutdownSandbox(sandboxState);
+			sandboxState.current = { kind: "disabled" };
+		} else {
+			// If switching mode while a runtime exists, reset — ASRT's config is
+			// captured at initialize() time. ensureSandboxReady will re-init lazily
+			// on the next bash call.
+			if (sandboxState.current.kind === "ready" || sandboxState.current.kind === "initializing") {
+				await shutdownSandbox(sandboxState);
+				sandboxState.current = { kind: "disabled" };
+			} else if (sandboxState.current.kind === "broken") {
+				// Give it another shot — the user may have just fixed dependencies
+				// via the UI (e.g. flipping mode off then on after installing srt).
+				sandboxState.current = { kind: "disabled" };
+			}
+
+			// Eager availability check so we surface dependency errors immediately
+			// rather than on the first bash call (matches the original design).
+			const avail = checkSandboxAvailability(settings.sandbox);
+			const broken = !avail.supportedPlatform || avail.errors.length > 0;
+			if (broken) {
+				const msg = [
+					`pi-auto sandbox mode="${desired}" but the OS sandbox is unavailable:`,
+					...avail.errors.map((e) => `  - ${e}`),
+					``,
+					`Fix the missing dependencies, or set sandbox.mode = "off" in /pi-auto-settings.`,
+				].join("\n");
+				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+				else console.error(msg);
+				sandboxState.current = { kind: "broken", reason: avail.errors.join("; ") };
+			} else if (avail.warnings.length > 0 && ctx.hasUI && opts.source === "session-start") {
+				ctx.ui.notify(`pi-auto sandbox: ${avail.warnings.join("; ")}`, "info");
+			}
+		}
+
+		refreshSandboxStatus(ctx);
+
+		if (ctx.hasUI) {
+			const transition = previous !== desired;
+			const shouldAnnounce = opts.source === "session-start" || transition;
+			if (shouldAnnounce) {
+				if (desired === "off") {
+					ctx.ui.notify(
+						"pi-auto sandbox: OFF — no OS-level backstop on bash calls. Re-enable via /pi-auto-settings.",
+						"warning",
+					);
+				} else if (transition && previous === "off") {
+					ctx.ui.notify(`pi-auto sandbox: ${desired} — bash calls wrapped`, "info");
+				} else if (transition) {
+					ctx.ui.notify(`pi-auto sandbox: mode changed → ${desired}`, "info");
+				}
+			}
+		}
+
+		appliedSandboxMode = desired;
+	}
+
+	/**
+	 * Recompute the sandbox status-bar entry from `settings.sandbox.mode`,
+	 * `settings.sandbox.showStatusIndicator`, and the runtime state.
+	 */
+	function refreshSandboxStatus(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
+		if (!settings.sandbox.showStatusIndicator) {
+			setSandboxStatus(ctx, undefined);
+			return;
+		}
+		setSandboxStatus(ctx, {
+			mode: settings.sandbox.mode,
+			broken: sandboxState.current.kind === "broken",
+		});
+	}
 
 	pi.on("turn_start", (event) => {
 		currentTurnId = `turn-${event.turnIndex}`;
@@ -294,10 +369,10 @@ export default function (pi: ExtensionAPI): void {
 		clearStatus(ctx);
 
 		if (reviewResult.kind === "failed") {
-			recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ false);
+			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
 			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
 				ctx.ui.notify(
-					`pi-auto sandbox denied + escape reviewer unavailable (${reviewResult.reason}): leaving sandbox error in place`,
+					`pi-auto: ${retryReason} (escape reviewer unavailable: ${reviewResult.reason}; leaving sandbox error in place)`,
 					"warning",
 				);
 			}
@@ -306,10 +381,10 @@ export default function (pi: ExtensionAPI): void {
 
 		const { assessment } = reviewResult;
 		if (assessment.outcome === "deny") {
-			recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ false);
+			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
 			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
 				ctx.ui.notify(
-					`pi-auto ✕ sandbox denied + reviewer denied escape (${assessment.risk_level}/${assessment.user_authorization}): ${assessment.rationale}`,
+					`pi-auto ✕ ${retryReason} Reviewer denied escape (${assessment.risk_level}/${assessment.user_authorization}): ${assessment.rationale}`,
 					"warning",
 				);
 			}
@@ -321,7 +396,7 @@ export default function (pi: ExtensionAPI): void {
 						type: "text",
 						text: [
 							`pi-auto sandbox blocked this command and the escape reviewer denied running it outside the sandbox.`,
-							`Sandbox denial: ${denial.reason}`,
+							retryReason,
 							`Escape rationale: ${assessment.rationale}`,
 							``,
 							`Sandbox output:`,
@@ -334,10 +409,10 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		// Escape allowed — re-run the original command outside the sandbox.
-		recordDenial(wrap.originalCommand, denial.reason, /*escapedAllow*/ true);
+		recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ true);
 		if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
 			ctx.ui.notify(
-				`pi-auto sandbox denied (${denial.reason}); reviewer approved escape: ${assessment.rationale}`,
+				`pi-auto: ${retryReason} Reviewer approved escape: ${assessment.rationale}`,
 				"info",
 			);
 		}
@@ -572,6 +647,13 @@ export default function (pi: ExtensionAPI): void {
 			settingsPaths = next;
 		},
 		defaults: DEFAULT_SETTINGS,
+		// Called after every successful /pi-auto-settings save. We reconcile
+		// side-effecty bits (sandbox runtime, status indicator, breaker
+		// thresholds) that the loader can't touch on its own.
+		onSettingsApplied: async (ctx) => {
+			breaker.setThresholds(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
+			await applySandboxMode(ctx, { source: "settings-change" });
+		},
 	});
 
 	pi.registerCommand("pi-auto-enable", {
@@ -744,13 +826,25 @@ function clearStatus(ctx: ExtensionContext): void {
  */
 function setSandboxStatus(
 	ctx: { hasUI: boolean; ui: { setStatus: (key: string, text: string | undefined) => void } },
-	on: boolean,
+	display: { mode: SandboxMode; broken: boolean } | undefined,
 ): void {
 	if (!ctx.hasUI) return;
 	const GREEN = "\x1b[92m";
+	const RED = "\x1b[91m";
+	const YELLOW = "\x1b[93m";
 	const RESET = "\x1b[0m";
+	let text: string | undefined;
+	if (display === undefined) {
+		text = undefined;
+	} else if (display.broken) {
+		text = `${RED}·sandbox BROKEN${RESET}`;
+	} else if (display.mode === "off") {
+		text = `${YELLOW}·sandbox OFF${RESET}`;
+	} else {
+		text = `${GREEN}·sandbox${RESET}`;
+	}
 	try {
-		ctx.ui.setStatus("pi-auto-sandbox", on ? `${GREEN}·sandbox${RESET}` : undefined);
+		ctx.ui.setStatus("pi-auto-sandbox", text);
 	} catch {
 		// older pi versions may not support setStatus in all contexts
 	}

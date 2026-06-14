@@ -154,8 +154,9 @@ Three modes:
 | `review-then-escape` | Reviewer first. If allowed, run wrapped. If the sandbox then denies, a second reviewer pass decides escape. |
 
 read/write/edit are unaffected — they run in-process and ASRT only
-wraps subprocesses. Default is `off` because bash wrapping changes how
-every command runs; existing users opt in.
+wraps subprocesses. Initial release defaulted to `off`; the layered-
+settings change below flipped the default to `escape-only` since the
+UI made it easy to opt back out.
 
 ASRT is initialized lazily on first bash call. `session_start` does a
 hard availability check when `mode != off` and aborts loudly on
@@ -333,9 +334,25 @@ built on pi's `ctx.ui.custom` + `SelectList` + `Input`. The flow is
 field, (3) edit value, (4) save — with each field showing its current
 effective value plus which layer that value came from so the user can
 see at a glance when they're editing a field already shadowed by a
-higher-precedence layer. `extraSafeCommandPrefixes` (nested argv
-arrays) is the one field not editable from the form; the descriptor
-set can be extended later.
+higher-precedence layer. The form intentionally only edits scalar /
+boolean / enum fields. List-typed fields (`sensitivePathPatterns`,
+`extraSafeCommandPrefixes`, the sandbox `allow*` / `deny*` arrays)
+and `customPolicy` (free-form prose) are JSON-file-only — the single-
+line input is the wrong shape for them, and the UI gains predictability
+by not trying.
+
+Two defaults flipped at the same time, since the UI made re-defaulting
+cheap:
+
+  - `sandbox.mode` defaults to `escape-only` instead of `off`. The
+    original default of `off` was driven by "don't surprise existing
+    users" — with a fast `/pi-auto-settings` toggle that argument is
+    much weaker, and shipping the OS-level backstop on by default is
+    the better posture.
+  - `fallbackToActiveModel` defaults to `false` instead of `true`. An
+    unintended fallback on a typo or outage is usually worse than the
+    reviewer failing closed (we fall back to a user prompt anyway).
+    Opt in via the UI.
 
 Non-goals for this iteration: an `environment` field (Claude Code-
 style prose infrastructure overlay). Listed in TODO.md but skipped
@@ -412,6 +429,98 @@ name edge cases drift.** The most useful tests in
 (post-denial re-auth, closeout-phrase, path-named-in-instructions).
 Scenarios that test specific phrasings that happen to work today
 break when the model shifts without telling you anything actionable.
+
+### Sandbox denial detection: noise filter, host/path surfacing, consolidation
+
+Landed a single end-to-end fix for three independent bugs in the
+sandbox-denial pipeline. All three were discovered by writing
+`tests/sandbox-e2e.test.ts` — a gated probe that initializes ASRT with
+our real production wiring (`recordingAskCallback` via a small test-only
+re-export), runs ~16 representative bash shapes against it, and captures
+the structured result of each. The probe gets us ground truth on what
+the sandbox actually does in practice, instead of inferring behavior
+from screenshots.
+
+The three bugs:
+
+**1. Noise-triggered false-positive denials.** Macos Seatbelt logs a
+few per-process sandbox queries (`sysctl-read kern.iossupportversion`,
+`mach-lookup com.apple.SystemConfiguration.configd`) on every sandboxed
+exec, regardless of what the command tried to do.
+`SandboxManager.annotateStderrWithSandboxFailures` includes those in
+the `<sandbox_violations>` block. Our denial detection treated any
+non-empty annotation as a denial. Result: in `escape-only` mode, every
+benign bash command (`echo`, `ls`, `pwd`, `git status`) triggered an
+escape review. The reviewer typically allowed, the command got
+re-executed unsandboxed, and the user saw spam notifications like
+`pi-auto sandbox denied (...); reviewer approved escape: Listing
+directory contents is a low-risk read operation...`. Confirmed in
+production before the fix.
+
+Fix: `filterNoiseFromAnnotation(annotated, original)`. Drops lines
+matching the known-noise table; if the block ends up empty, returns
+the verbatim `original` string so the equality check downstream
+(`annotated !== combinedOutput`) sees no diff. The `original`
+parameter is required — trimming the annotated string instead corrupts
+the equality check for any output that ends in whitespace, which is
+most real stderr.
+
+**2. Captured host wasn't propagating to retryReason.** ASRT's
+`askCallback` fires for curl, urllib, anything that honors the HTTP
+proxy env vars — we capture host+port via the production
+`recordingAskCallback` into `recentNetworkAttempts`. But
+`buildRetryReason` only used those captures when a separate regex test
+on `denialReason` returned true for `/network|proxy|allowlist/i`. For
+the violation-store-detected branch, `denialReason` was the generic
+string `"sandbox denial recorded by ASRT violation store"`, which
+doesn't match. So we had `example.com:443` in memory and threw it
+away, returning the generic `"Sandbox denied this command."` to the
+reviewer.
+
+Fix: hoist `networkAttempts.length > 0` above the `isNetwork` text
+gate in `buildRetryReason`. If the callback recorded an attempt during
+the command's window, it WAS network by definition — we don't need a
+fuzzy text classifier to confirm.
+
+**3. Detection table missed real-world denial shapes.** The text
+patterns predated the e2e and were guesses. Real ASRT output diverges
+in three ways: (a) the actual HTTP proxy error header is
+`X-Proxy-Error: blocked-by-allowlist` (hyphenated, not the
+space-separated `"blocked by network allowlist"` I had); (b) `curl`
+returns exit 0 even when the proxy synthesized a 403, so any pattern
+gated on `isError` missed it; (c) the table had no markers for the DNS
+failures emitted by raw socket runtimes (Python `gaierror`, Node
+`ENOTFOUND`, curl `Could not resolve host`, Go `no such host`, the
+HTTPS-specific `CONNECT tunnel failed`).
+
+Fix: add a `HARD_PROXY_MARKERS` table that fires regardless of
+`isError` (for the proxy-response case), and extend the regular
+markers table with the DNS-failure spellings. `extractDeniedPathFromStderr`
+got two new shapes too: Python's `PermissionError: ... Operation not
+permitted: '<path>'` format (path AFTER the marker, not before like
+bash), and a fallback that parses the path straight out of a
+`deny(N) file-(write|read)-<op> <path>` violation-store line.
+
+**Consolidation.** Once the network/filesystem signals were flowing
+correctly, `denial.reason` (the categorical label from
+`detectSandboxDenial`) and `retryReason` (the full sentence with host
+or path) were two views of the same information — with `retryReason`
+strictly more useful. Swept through the production code to consolidate
+on `retryReason` for every user-facing site (block message to the
+agent, inline notify on escape allow/deny, recent-denials log shown by
+`/pi-auto-sandbox`). `denial.reason` is now used purely as a build
+input for `retryReason`.
+
+**Test coverage.** 41 unit tests in `tests/sandbox.test.ts` cover the
+noise filter, the extended pattern table, both new path-extraction
+shapes, and the network-attempt-wins behavior in `buildRetryReason`.
+The e2e probe at `tests/sandbox-e2e.test.ts` (gated by
+`PI_AUTO_SANDBOX_E2E=1`) covers 16 shapes against the real sandbox
+runtime; baseline commands must classify as not-denied, network shapes
+with captured hosts must surface them in retryReason, filesystem
+denials must surface the path. The probe writes a structured
+`results.json` + `summary.md` to `/tmp/pi-agent/sandbox-e2e/<ts>/` for
+human review.
 
 ## Open work
 
