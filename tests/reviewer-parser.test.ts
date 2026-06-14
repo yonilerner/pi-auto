@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { extractJsonObject, parseAssessment } from "../extensions/reviewer.ts";
+import {
+	applyDeterministicReviewGuards,
+	applyDeterministicScopeGuard,
+	extractJsonObject,
+	parseAssessment,
+} from "../extensions/reviewer.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
 describe("extractJsonObject", () => {
 	it("returns plain JSON unchanged", () => {
@@ -24,6 +31,126 @@ describe("extractJsonObject", () => {
 
 	it("returns undefined when no object is found", () => {
 		expect(extractJsonObject("just words")).toBeUndefined();
+	});
+});
+
+describe("applyDeterministicScopeGuard", () => {
+	const allow: ReviewerAssessment = {
+		risk_level: "medium",
+		user_authorization: "medium",
+		outcome: "allow",
+		rationale: "model allowed it",
+	};
+
+	function ctxWithUser(text: string): ExtensionContext {
+		return {
+			sessionManager: {
+				getBranch: () => [
+					{ type: "message", message: { role: "user", content: text } },
+				],
+			},
+		} as unknown as ExtensionContext;
+	}
+
+	function packageWrite(path = "/home/me/other-project/package.json"): ReviewableAction {
+		return {
+			toolName: "write",
+			toolCallId: "tc-test",
+			label: `write: ${path}`,
+			payload: { tool: "write", path, cwd: "/home/me/project", outsideCwd: true },
+		};
+	}
+
+	it("denies sibling package.json writes for ambiguous all-package requests", () => {
+		const guarded = applyDeterministicScopeGuard(
+			allow,
+			packageWrite(),
+			ctxWithUser("update all the package.json files"),
+		);
+		expect(guarded.outcome).toBe("deny");
+		expect(guarded.user_authorization).toBe("unknown");
+	});
+
+	it("does not deny when the user names all repos under a broader root", () => {
+		const guarded = applyDeterministicScopeGuard(
+			allow,
+			packageWrite(),
+			ctxWithUser("bump lodash in every package.json across all my repos under /home/me"),
+		);
+		expect(guarded).toBe(allow);
+	});
+
+	it("does not deny when the user names the sibling package file", () => {
+		const guarded = applyDeterministicScopeGuard(
+			allow,
+			packageWrite(),
+			ctxWithUser("also update /home/me/other-project/package.json"),
+		);
+		expect(guarded).toBe(allow);
+	});
+
+	it("does not affect non-package writes", () => {
+		const guarded = applyDeterministicScopeGuard(
+			allow,
+			packageWrite("/home/me/other-project/src/index.ts"),
+			ctxWithUser("update all the package.json files"),
+		);
+		expect(guarded).toBe(allow);
+	});
+
+	it("denies force-push to main when the user only asked to push", () => {
+		const guarded = applyDeterministicReviewGuards(
+			{ ...allow, risk_level: "high" },
+			{
+				toolName: "bash",
+				toolCallId: "tc-test",
+				label: "bash: git push --force origin main",
+				payload: {
+					tool: "bash",
+					command: "git push --force origin main",
+					cwd: "/home/me/project",
+				},
+			},
+			ctxWithUser("push my latest commit"),
+		);
+		expect(guarded.outcome).toBe("deny");
+		expect(guarded.user_authorization).toBe("unknown");
+	});
+
+	it("does not deny force-push to main when the user explicitly authorized it", () => {
+		const guarded = applyDeterministicReviewGuards(
+			{ ...allow, risk_level: "high" },
+			{
+				toolName: "bash",
+				toolCallId: "tc-test",
+				label: "bash: git push --force origin main",
+				payload: {
+					tool: "bash",
+					command: "git push --force origin main",
+					cwd: "/home/me/project",
+				},
+			},
+			ctxWithUser("force-push main now"),
+		);
+		expect(guarded).toEqual({ ...allow, risk_level: "high" });
+	});
+
+	it("denies deploy apply commands when the user said not to run yet", () => {
+		const guarded = applyDeterministicReviewGuards(
+			{ ...allow, risk_level: "high" },
+			{
+				toolName: "bash",
+				toolCallId: "tc-test",
+				label: "bash: kubectl apply",
+				payload: {
+					tool: "bash",
+					command: "kubectl --context=prod apply -f deploy/prod.yaml",
+					cwd: "/home/me/project",
+				},
+			},
+			ctxWithUser("prepare the prod deploy for the new config, but don't run it yet"),
+		);
+		expect(guarded.outcome).toBe("deny");
 	});
 });
 
