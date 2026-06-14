@@ -36,7 +36,9 @@ import {
 	type SandboxState,
 } from "./sandbox.ts";
 import { decideScope } from "./scope.ts";
-import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "./types.ts";
+import { registerSettingsCommand } from "./settings-ui.ts";
+import { loadSettings } from "./settings-store.ts";
+import type { PiAutoSettings, ReviewableAction, ReviewerAssessment, SettingsLayerMap } from "./types.ts";
 
 const DEFAULT_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
@@ -68,6 +70,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	],
 	announceAllows: true,
 	customPolicy: "",
+	reviewerPolicySource: "default",
 	extraSafeCommandPrefixes: [],
 	// Default to false on both: the policy already polices authorization-source
 	// (assistant text doesn't count as auth, tool results don't count as auth),
@@ -123,7 +126,17 @@ interface WrappedBashState {
 }
 
 export default function (pi: ExtensionAPI): void {
-	const settings: PiAutoSettings = { ...DEFAULT_SETTINGS };
+	// Live settings + layer attribution. Both start at DEFAULT_SETTINGS until
+	// session_start runs loadSettings() with the resolved project root, then
+	// every field is replaced in place. We keep one object identity for the
+	// session so closures (handlers, registered commands) see the latest
+	// values without rebinding.
+	const settings: PiAutoSettings = structuredClone(DEFAULT_SETTINGS);
+	let settingsLayers: SettingsLayerMap = buildInitialLayerMap();
+	let settingsPaths: { userGlobal: string | null; perProject: string | null } = {
+		userGlobal: null,
+		perProject: null,
+	};
 	const breaker = new CircuitBreaker(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
 
 	// Runtime override: when true, ALL tool calls bypass pi-auto entirely
@@ -150,6 +163,19 @@ export default function (pi: ExtensionAPI): void {
 	// session fails loudly the moment the user launches pi, not on the first
 	// bash command.
 	pi.on("session_start", (_event, ctx) => {
+		// Load layered settings before anything else looks at them. Subsequent
+		// session_start handlers (sandbox availability, UI) will see merged
+		// settings. Errors and warnings surface as ui.notify.
+		const loaded = loadSettings({ defaults: DEFAULT_SETTINGS, cwd: ctx.cwd });
+		assignSettings(settings, loaded.settings);
+		settingsLayers = loaded.layers;
+		settingsPaths = loaded.paths;
+		if (loaded.warnings.length > 0 && ctx.hasUI) {
+			for (const w of loaded.warnings) ctx.ui.notify(w, "warning");
+		}
+		// Rebind the breaker thresholds in case the loaded settings changed them.
+		breaker.setThresholds(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
+
 		if (settings.sandbox.mode === "off") return;
 		const avail = checkSandboxAvailability(settings.sandbox);
 		const broken = !avail.supportedPlatform || avail.errors.length > 0;
@@ -534,6 +560,20 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
+	registerSettingsCommand(pi, {
+		getSettings: () => settings,
+		applySettings: (next) => assignSettings(settings, next),
+		getLayers: () => settingsLayers,
+		setLayers: (next) => {
+			settingsLayers = next;
+		},
+		getPaths: () => settingsPaths,
+		setPaths: (next) => {
+			settingsPaths = next;
+		},
+		defaults: DEFAULT_SETTINGS,
+	});
+
 	pi.registerCommand("pi-auto-enable", {
 		description: "Re-enable pi-auto review after /pi-auto-disable.",
 		handler: async (_args, ctx) => {
@@ -748,4 +788,29 @@ function setDisabledStatus(
 	} catch {
 		// older pi versions may not support setStatus in all contexts
 	}
+}
+
+/**
+ * Replace `target`'s fields with `source`'s, in place. Keeps the object
+ * identity so any closures already holding a reference to the live
+ * settings object see the new values. Used after settings reload.
+ */
+function assignSettings(target: PiAutoSettings, source: PiAutoSettings): void {
+	for (const key of Object.keys(source) as Array<keyof PiAutoSettings>) {
+		// biome-ignore lint/suspicious/noExplicitAny: shallow copy of a typed shape
+		(target as any)[key] = (source as any)[key];
+	}
+}
+
+/**
+ * Pre-session_start layer map. Everything points at "default" until
+ * loadSettings runs. Allows the UI to be opened before session_start would
+ * complete (defensive — shouldn't normally happen).
+ */
+function buildInitialLayerMap(): SettingsLayerMap {
+	const map = {} as SettingsLayerMap;
+	for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof PiAutoSettings>) {
+		map[key] = "default";
+	}
+	return map;
 }

@@ -104,7 +104,28 @@ please try that again
 
 ## Configuration
 
-The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
+The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. Run `/pi-auto-settings` to edit them interactively. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
+
+### Where settings come from
+
+pi-auto reads settings from four layers, lowest to highest precedence:
+
+1. **`DEFAULT_SETTINGS`** — compiled-in defaults.
+2. **User-global JSON** at `$PI_AGENT_DIR/extensions/pi-auto.json` (resolves to `~/.pi/agent/extensions/pi-auto.json` when `PI_AGENT_DIR` is unset). Edit it with `/pi-auto-settings` or by hand. Partial files are fine — only the fields you set override defaults.
+3. **Per-project JSON** at `.agents/pi-auto.json`, discovered by walking up from cwd to the project root (stopping at a `.git` directory or `$HOME`). Same partial-file behavior. Check this file in alongside `AGENTS.md` so a whole team gets the same reviewer behavior for the project.
+4. **`PI_AUTO_*` environment variables** — final-word overrides for one-off runs (CI, ad-hoc benchmarks). Today the only supported env var is `PI_AUTO_USE_CODEX_POLICY` (see [§Reviewer model](#reviewer-model)).
+
+Files can be malformed (missing field types, syntax errors) without breaking pi-auto — a warning is shown and the file is treated as empty until you fix it. `/pi-auto` shows which layer each effective value came from.
+
+### `/pi-auto-settings`
+
+Interactive form, opened with the slash command. The flow:
+
+1. Pick which layer to edit (user-global or per-project).
+2. Pick a field; each row shows the field's current effective value plus the layer it loaded from (so you can see at a glance when you're editing a field that's already shadowed by a higher-precedence layer).
+3. The editor depends on the field type: boolean / enum fields show a small picker, text / number / list fields open a single-line input.
+
+Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. `extraSafeCommandPrefixes` is the one field not in the form (nested argv arrays); edit it in JSON directly.
 
 ### Reviewer model
 
@@ -117,6 +138,7 @@ These settings pick which model performs the review and how to authenticate to i
 | `fallbackToActiveModel`  | `true`           | If the configured reviewer model isn't available, use whatever model the user's current session is on. |
 | `reviewerTimeoutMs`      | `30_000`         | Per-call timeout. If the reviewer takes longer than this, the review is treated as failed (which falls back to a user prompt). |
 | `useCodexAutoReview`     | `false`          | If true, ignore `reviewerProvider`/`reviewerModel` and route the review through OpenAI's hidden `codex-auto-review` slug — the same model Codex itself uses internally. Requires an OpenAI API key configured in pi (ChatGPT-only login won't work; this slug needs a real API key). In our benchmark this scored 34/39 vs gpt-5-mini's 39/39 on our scenario set, mostly because Codex's policy is stricter than ours (credential reads, narrowly-scoped `/tmp` deletes, `sudo apt install`). Keep off unless you specifically want Codex-policy alignment. |
+| `reviewerPolicySource`   | `"default"`      | `"default"` uses pi-auto's tuned policy; `"codex-verbatim"` swaps in codex's published guardian policy template verbatim (mirrored at `extensions/policies/codex-guardian-policy.md`). Mainly for benchmarks — our policy beat codex's on our scenario set; see `docs/HISTORY.md`. Override with the env var `PI_AUTO_USE_CODEX_POLICY=1` (sets `"codex-verbatim"`) / `=0` (sets `"default"`); the env var wins over the settings file. |
 
 ### Scope and policy
 
@@ -173,9 +195,11 @@ Denials always emit — they aren't gated by `announceAllows`. Review failures (
 ## Commands
 
 - `/pi-auto` — show current configuration and whether the reviewer is currently enabled.
+- `/pi-auto-settings` — edit settings interactively. Saves to user-global or per-project JSON, applies live. See [§`/pi-auto-settings`](#pi-auto-settings).
 - `/pi-auto-disable` — pause review. All tool calls run without pi-auto until `/pi-auto-enable`. See [Pausing the reviewer](#pausing-the-reviewer).
 - `/pi-auto-enable` — re-enable review.
 - `/pi-auto-toggle-announce` — toggle inline rationale messages for allowed actions.
+- `/pi-auto-sandbox` — show sandbox mode, configuration, and recent denials.
 
 ## Upstream sync
 
@@ -268,7 +292,12 @@ extensions/
   retrieval.ts        action-keyed retrieval over older transcript entries
   bash-parser.ts      tree-sitter-bash wrapper for the safe-command fast path
   safe-commands.ts    known-safe command classifier (port of Codex's is_safe_command)
+  sandbox.ts          OS sandbox wrapping (sandbox.mode); wraps @anthropic-ai/sandbox-runtime
+  settings-store.ts   layered settings (defaults / user-global / per-project / env)
+  settings-ui.ts      /pi-auto-settings command implementation
   types.ts            shared types (PiAutoSettings, ReviewableAction, ...)
+  policies/
+    codex-guardian-policy.md  verbatim mirror of codex's guardian policy template
 ```
 
 ## Caveats

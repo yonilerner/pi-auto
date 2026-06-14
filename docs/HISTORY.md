@@ -283,6 +283,72 @@ Codex's full policy is worse overall but nails the specific
 "sandbox-retry-isn't-suspicious" cases. We took just that one clause.
 Kept the env var around for future apples-to-apples runs.
 
+### Layered settings + `/pi-auto-settings` UI
+
+Before this change the only way to configure pi-auto beyond `disabled`
+and `announceAllows` was editing `DEFAULT_SETTINGS` in
+`extensions/pi-auto.ts` and relaunching. That made experimenting with
+the reviewer policy or sandbox modes per-project effectively
+impossible, and made the `PI_AUTO_USE_CODEX_POLICY` env var (added in
+the prior commit) feel like a one-off escape hatch rather than part of
+any coherent precedence model.
+
+Added `extensions/settings-store.ts` implementing a four-layer load
+order, lowest to highest:
+
+1. `DEFAULT_SETTINGS`
+2. **User-global JSON** at `$PI_AGENT_DIR/extensions/pi-auto.json`
+   (defaults to `~/.pi/agent/extensions/pi-auto.json`).
+3. **Per-project JSON** at `.agents/pi-auto.json`, discovered by
+   walking up from cwd. The walk stops at the first `.git` or at
+   `$HOME` so a stray `~/.agents/pi-auto.json` is never picked up as
+   project config.
+4. **`PI_AUTO_*` env vars** — final-word overrides for one-off runs.
+   Today the only one is `PI_AUTO_USE_CODEX_POLICY`. New env vars must
+   be added to the `ENV_VAR_OVERRIDES` table in settings-store.ts,
+   which is the single registry. A test asserts the list stays small.
+
+The shape of each layer is `Partial<PiAutoSettings>`; partial files at
+any layer merge over what's below. The merge is shallow at the top of
+`PiAutoSettings` with one deliberate deep-merge on the `sandbox`
+sub-object so a user-global `sandbox.mode = "escape-only"` can coexist
+with a per-project `sandbox.deniedDomains: [...]`.
+
+Load-time errors (malformed JSON, non-object roots) surface as
+warnings via `ctx.ui.notify` rather than blowing up; the affected
+file is treated as empty until the user fixes it. The reviewer keeps
+functioning on defaults rather than failing closed on a typo.
+
+Along with the loader: a new `reviewerPolicySource: "default" |
+"codex-verbatim"` field on `PiAutoSettings`, mapped 1:1 with the
+`PI_AUTO_USE_CODEX_POLICY` env var. `policy.ts` now reads from
+settings; the env var is applied through `settings-store.ts` so
+`policy.ts` doesn't touch `process.env` directly. This is the pattern
+for any future env-driven config: add a field, register the env var in
+the override table, callers only read from settings.
+
+UI: a new `/pi-auto-settings` slash command opens an interactive form
+built on pi's `ctx.ui.custom` + `SelectList` + `Input`. The flow is
+(1) pick a layer to edit (user-global or per-project), (2) pick a
+field, (3) edit value, (4) save — with each field showing its current
+effective value plus which layer that value came from so the user can
+see at a glance when they're editing a field already shadowed by a
+higher-precedence layer. `extraSafeCommandPrefixes` (nested argv
+arrays) is the one field not editable from the form; the descriptor
+set can be extended later.
+
+Non-goals for this iteration: an `environment` field (Claude Code-
+style prose infrastructure overlay). Listed in TODO.md but skipped
+here — the wiring is straightforward, the harder question is how the
+reviewer should consume it, and that's a measurement-driven decision
+best taken with eval-set scaling.
+
+No measurable change to reviewer behavior — this is purely
+configuration plumbing. Unit tests for the loader cover precedence,
+deep merge on `sandbox`, malformed-file tolerance, the env-var
+registry, and the per-project-write path resolver (25 tests in
+`tests/settings-store.test.ts`).
+
 ## Findings
 
 Concrete observations from this work. Each one is grounded in a

@@ -109,6 +109,26 @@ export interface ReviewableAction {
 	payload: Record<string, unknown>;
 }
 
+/**
+ * Where a settings field's effective value came from. Used by the
+ * /pi-auto-settings UI to display which layer each setting loaded from
+ * and to scope writes to the correct file.
+ *
+ *  - "default":     compiled-in DEFAULT_SETTINGS.
+ *  - "user-global": $PI_AGENT_DIR/extensions/pi-auto.json (default
+ *                   ~/.pi/agent/extensions/pi-auto.json).
+ *  - "per-project": .agents/pi-auto.json at the project root.
+ *  - "env":         PI_AUTO_* environment variable override.
+ */
+export type SettingsLayer = "default" | "user-global" | "per-project" | "env";
+
+/**
+ * Per-field map showing which SettingsLayer each PiAutoSettings field was
+ * loaded from. Built during loadSettings(); read by the UI. Fields that
+ * weren't overridden by any non-default layer appear as "default".
+ */
+export type SettingsLayerMap = { [K in keyof PiAutoSettings]: SettingsLayer };
+
 export interface PiAutoSettings {
 	/** Provider for the reviewer model, e.g. "openai". */
 	reviewerProvider: string;
@@ -153,6 +173,20 @@ export interface PiAutoSettings {
 	announceAllows: boolean;
 	/** Custom policy text appended after the base policy. Empty = use defaults. */
 	customPolicy: string;
+	/**
+	 * Which reviewer policy template to use.
+	 *
+	 *  - "default":         our tuned policy (extensions/policy.ts BASE_POLICY).
+	 *  - "codex-verbatim":  the codex Guardian policy mirrored at
+	 *                      extensions/policies/codex-guardian-policy.md.
+	 *                      The customPolicy field is spliced into codex's
+	 *                      `{tenant_policy_config}` slot when this is set.
+	 *
+	 * Mostly useful for benchmarks; our policy beats codex's verbatim policy
+	 * on our scenario set (see docs/HISTORY.md). The env var
+	 * `PI_AUTO_USE_CODEX_POLICY=1` overrides this field to "codex-verbatim".
+	 */
+	reviewerPolicySource: "default" | "codex-verbatim";
 	/**
 	 * Strip assistant prose from the transcript shown to the reviewer.
 	 *

@@ -70,7 +70,7 @@ export async function reviewAction(
 			projectInstructions,
 		});
 	} else {
-		systemPrompt = buildReviewerSystemPrompt(settings.customPolicy);
+		systemPrompt = buildReviewerSystemPrompt(settings);
 		const transcript = buildTranscript({
 			sessionManager: ctx.sessionManager,
 			settings,

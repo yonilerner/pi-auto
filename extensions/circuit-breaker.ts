@@ -22,9 +22,19 @@ interface TurnState {
 export class CircuitBreaker {
 	private turns = new Map<string, TurnState>();
 	constructor(
-		private readonly maxConsecutive: number,
-		private readonly maxTotal: number,
+		private maxConsecutive: number,
+		private maxTotal: number,
 	) {}
+
+	/**
+	 * Update the thresholds without throwing away in-progress turn state.
+	 * Used after settings reload (session_start) so a UI change to the
+	 * circuit-breaker limits takes effect for the current session.
+	 */
+	setThresholds(maxConsecutive: number, maxTotal: number): void {
+		this.maxConsecutive = maxConsecutive;
+		this.maxTotal = maxTotal;
+	}
 
 	clearTurn(turnId: string): void {
 		this.turns.delete(turnId);

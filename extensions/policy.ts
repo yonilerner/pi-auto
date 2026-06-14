@@ -5,29 +5,23 @@
  * there is no enforced sandbox: every reviewed action executes with the
  * user's full privileges if allowed.
  *
- * TODO(benchmark): Try the codex policy verbatim.
- *   extensions/policies/codex-guardian-policy.md is a verbatim mirror of
- *   https://github.com/openai/codex/blob/main/codex-rs/core/src/guardian/policy_template.md
- *   We can toggle it on with `PI_AUTO_USE_CODEX_POLICY=1` during a live 5x
- *   run (see buildReviewerSystemPrompt) to compare apples-to-apples with our
- *   tuned policy on the same scenario set. Codex's policy is shorter, more
- *   prescriptive about thresholds, and explicitly carves out "sandbox retry
- *   is not by itself suspicious" — worth measuring whether their wording
- *   transfers cleanly to our model (gpt-5-mini @ minimal) or whether ours
- *   wins on the specific failure modes we've encoded scenarios for.
+ * Policy selection is settings-driven: `reviewerPolicySource = "default"`
+ * uses BASE_POLICY below; `reviewerPolicySource = "codex-verbatim"` swaps
+ * in extensions/policies/codex-guardian-policy.md (a verbatim mirror of
+ * https://github.com/openai/codex/blob/main/codex-rs/core/src/guardian/policy_template.md).
+ * The env var `PI_AUTO_USE_CODEX_POLICY=1` is wired to set this field via
+ * settings-store.ts (see ENV_VAR_OVERRIDES there). Codex's policy is
+ * shorter and more prescriptive but lost overall on our 5x scenario set;
+ * see docs/HISTORY.md.
  */
 
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PiAutoSettings } from "./types.ts";
 
 export const REVIEWER_OUTPUT_CONTRACT = `Respond with a single JSON object on one line and nothing else:
 {"risk_level":"low|medium|high|critical","user_authorization":"high|medium|low|unknown","outcome":"allow|deny","rationale":"one short sentence"}`;
-
-/** Set via `PI_AUTO_USE_CODEX_POLICY=1` to compare against codex's verbatim policy. */
-function shouldUseCodexPolicy(): boolean {
-	return process.env.PI_AUTO_USE_CODEX_POLICY === "1";
-}
 
 let cachedCodexPolicy: string | undefined;
 function loadCodexPolicy(): string {
@@ -38,11 +32,19 @@ function loadCodexPolicy(): string {
 	return cachedCodexPolicy;
 }
 
-export function buildReviewerSystemPrompt(customPolicy: string): string {
-	if (shouldUseCodexPolicy()) {
+/**
+ * Build the reviewer system prompt. Reads `customPolicy` and
+ * `reviewerPolicySource` from settings. Callers typically pass the whole
+ * PiAutoSettings; tests can pass a minimal `Pick<...>` shape.
+ */
+export function buildReviewerSystemPrompt(
+	settings: Pick<PiAutoSettings, "customPolicy" | "reviewerPolicySource">,
+): string {
+	const customPolicy = settings.customPolicy;
+	if (settings.reviewerPolicySource === "codex-verbatim") {
 		// Codex's template has a `{tenant_policy_config}` slot meant for
-		// per-tenant overrides. We splice customPolicy in there so the env-var
-		// toggle stays drop-in for callers that already set settings.customPolicy.
+		// per-tenant overrides. We splice customPolicy in there so the toggle
+		// stays drop-in for callers that already set settings.customPolicy.
 		const template = loadCodexPolicy();
 		const filled = template.replace("{tenant_policy_config}", customPolicy.trim());
 		return `${filled.trim()}\n\n# Output Contract\n${REVIEWER_OUTPUT_CONTRACT}\n`;

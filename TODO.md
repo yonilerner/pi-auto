@@ -5,7 +5,7 @@ at the bottom of the relevant section.
 
 ## Configuration
 
-- [ ] **Settings file + in-pi settings UI.** Today the only way to change
+- [x] **Settings file + in-pi settings UI.** Today the only way to change
       anything beyond `announceAllows` / `disabled` is to edit
       `DEFAULT_SETTINGS` in `extensions/pi-auto.ts` and relaunch pi
       ([README §Configuration](README.md#configuration)). Two pieces:
@@ -85,7 +85,13 @@ at the bottom of the relevant section.
         evidence about what's internal vs. external when scoring
         `risk_level`. Lower friction than tightly-coded allow/deny
         patterns. Composes with `customPolicy` rather than replacing
-        it. Naturally lives in per-project JSON.
+        it. Naturally lives in per-project JSON. **NOTE:** the
+        settings plumbing (loader + UI) shipped without this field
+        because wiring it into the reviewer prompt is a measurement-
+        driven decision — we want to ablate the prompt placement
+        (system prompt vs. action payload vs. spliced into
+        `customPolicy`) against the live scenario set before settling.
+        Pick this up alongside eval-set scaling (below).
 
 ## Reviewer architecture
 
