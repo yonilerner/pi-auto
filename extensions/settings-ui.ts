@@ -426,6 +426,11 @@ async function pickField(
 	const items: SelectItem[] = FIELDS.map((f) => {
 		const current = f.read(settings);
 		const currentLayer = layers[f.settingsKey];
+		const layerAttribution = formatLayerAttribution(
+			currentLayer,
+			current,
+			f.read(deps.defaults),
+		);
 		const shadowedNote = isShadowed(currentLayer, layer)
 			? ` (overridden by ${currentLayer})`
 			: "";
@@ -433,7 +438,7 @@ async function pickField(
 		return {
 			value: f.id,
 			label: f.label,
-			description: `= ${current}  [${currentLayer}]${shadowedNote}${help}`,
+			description: `= ${current}  ${layerAttribution}${shadowedNote}${help}`,
 		};
 	});
 	const layerLabel = layer === "user-global" ? "user-global" : "per-project";
@@ -716,6 +721,20 @@ function parseNumber(raw: string, opts: { min?: number; max?: number } = {}): nu
 		throw new Error(`value must be <= ${opts.max}`);
 	}
 	return n;
+}
+
+export function formatLayerAttribution(
+	currentLayer: SettingsLayer,
+	currentValue: string,
+	defaultValue: string,
+): string {
+	if (
+		(currentLayer === "user-global" || currentLayer === "per-project") &&
+		currentValue === defaultValue
+	) {
+		return `[${currentLayer}, default]`;
+	}
+	return `[${currentLayer}]`;
 }
 
 function isShadowed(currentLayer: SettingsLayer, editingLayer: EditableLayer): boolean {
