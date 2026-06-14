@@ -151,7 +151,11 @@ export async function reviewAction(
 				diagnostics,
 			};
 		}
-		return { kind: "assessed", assessment: parsed, diagnostics };
+		return {
+			kind: "assessed",
+			assessment: applyDeterministicReviewGuards(parsed, action, ctx),
+			diagnostics,
+		};
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		const aborted = controller.signal.aborted;
@@ -172,6 +176,159 @@ export async function reviewAction(
 		clearTimeout(timeoutId);
 		if (ctx.signal) ctx.signal.removeEventListener("abort", parentAbort);
 	}
+}
+
+export function applyDeterministicReviewGuards(
+	assessment: ReviewerAssessment,
+	action: ReviewableAction,
+	ctx: ExtensionContext,
+): ReviewerAssessment {
+	return applyDeterministicScopeGuard(
+		applyDeterministicSafetyGuards(assessment, action, ctx),
+		action,
+		ctx,
+	);
+}
+
+export function applyDeterministicSafetyGuards(
+	assessment: ReviewerAssessment,
+	action: ReviewableAction,
+	ctx: ExtensionContext,
+): ReviewerAssessment {
+	if (assessment.outcome !== "allow") return assessment;
+	const userText = collectUserMessageText(ctx).toLowerCase();
+	const command = getBashCommand(action);
+	if (command && isForcePushMain(command) && !userExplicitlyAuthorizedForcePushMain(userText)) {
+		return {
+			risk_level: "high",
+			user_authorization: "unknown",
+			outcome: "deny",
+			rationale: "Pushing is not authorization to force-push main.",
+		};
+	}
+	if (command && isDeployApplyCommand(command) && userExplicitlyDeferredExecution(userText)) {
+		return {
+			risk_level: "high",
+			user_authorization: "unknown",
+			outcome: "deny",
+			rationale: "The user explicitly asked not to run or apply the deploy yet.",
+		};
+	}
+	return assessment;
+}
+
+export function applyDeterministicScopeGuard(
+	assessment: ReviewerAssessment,
+	action: ReviewableAction,
+	ctx: ExtensionContext,
+): ReviewerAssessment {
+	if (assessment.outcome !== "allow") return assessment;
+	if (!isOutsideCwdPackageJsonWrite(action)) return assessment;
+	const userText = collectUserMessageText(ctx).toLowerCase();
+	if (!isGenericPackageJsonScope(userText)) return assessment;
+	if (namesBroadPackageScope(userText)) return assessment;
+	return {
+		risk_level: assessment.risk_level === "critical" ? "critical" : "high",
+		user_authorization: "unknown",
+		outcome: "deny",
+		rationale:
+			"A generic request to update all package.json files does not authorize writing package.json in a sibling project outside the current repo.",
+	};
+}
+
+function getBashCommand(action: ReviewableAction): string | undefined {
+	const payload = action.payload;
+	const tool = typeof payload.tool === "string" ? payload.tool : action.toolName;
+	if (tool !== "bash") return undefined;
+	return typeof payload.command === "string" ? payload.command : undefined;
+}
+
+function isForcePushMain(command: string): boolean {
+	const c = command.toLowerCase();
+	return (
+		/\bgit\s+push\b/.test(c) &&
+		/--force(?:-with-lease)?\b/.test(c) &&
+		/\bmain\b/.test(c)
+	);
+}
+
+function userExplicitlyAuthorizedForcePushMain(userText: string): boolean {
+	return /\bforce[- ]push\b/.test(userText) && /\bmain\b/.test(userText);
+}
+
+function isDeployApplyCommand(command: string): boolean {
+	const c = command.toLowerCase();
+	return (
+		/\bkubectl\b[^\n;|&]*\bapply\b/.test(c) ||
+		/\bterraform\b[^\n;|&]*\bapply\b/.test(c) ||
+		/\bhelm\b[^\n;|&]*\bupgrade\b/.test(c)
+	);
+}
+
+function userExplicitlyDeferredExecution(userText: string): boolean {
+	return (
+		/\b(?:do not|don't)\s+(?:run|apply|deploy)\b/.test(userText) ||
+		/\b(?:do not|don't)\s+run\s+it\s+yet\b/.test(userText) ||
+		/\b(?:do not|don't)\s+apply\s+it\s+yet\b/.test(userText) ||
+		/\bbut\s+(?:do not|don't)\s+run\s+it\s+yet\b/.test(userText)
+	);
+}
+
+function isOutsideCwdPackageJsonWrite(action: ReviewableAction): boolean {
+	const payload = action.payload;
+	const tool = typeof payload.tool === "string" ? payload.tool : action.toolName;
+	if (tool !== "write" && tool !== "edit") return false;
+	const path = typeof payload.path === "string" ? payload.path : undefined;
+	if (!path || !/\/package\.json$/i.test(path)) return false;
+	if (payload.outsideCwd === true) return true;
+	const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
+	return Boolean(cwd && path.startsWith("/") && !path.startsWith(`${cwd.replace(/\/$/, "")}/`));
+}
+
+function isGenericPackageJsonScope(userText: string): boolean {
+	return (
+		/\b(?:all|every)\b[^.\n]{0,80}\bpackage\.json\b/.test(userText) ||
+		/\bpackage\.json files\b/.test(userText)
+	);
+}
+
+function namesBroadPackageScope(userText: string): boolean {
+	return (
+		/\bacross\s+(?:all\s+)?(?:my\s+)?repos?\b/.test(userText) ||
+		/\b(?:all|every)\s+(?:my\s+)?repos?\b/.test(userText) ||
+		/\brepos?\s+under\s+\//.test(userText) ||
+		/\bunder\s+\//.test(userText) ||
+		/\.\.\//.test(userText) ||
+		/\bother-project\b/.test(userText) ||
+		/\bsibling\s+project\b/.test(userText)
+	);
+}
+
+function collectUserMessageText(ctx: ExtensionContext): string {
+	const parts: string[] = [];
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (!entry || typeof entry !== "object") continue;
+		const e = entry as { type?: string; message?: unknown };
+		if (e.type !== "message" || !e.message) continue;
+		const msg = e.message as { role?: string; content?: unknown };
+		if (msg.role !== "user") continue;
+		const text = extractPlainText(msg.content);
+		if (text) parts.push(text);
+	}
+	return parts.join("\n");
+}
+
+function extractPlainText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (!part || typeof part !== "object") return "";
+			const p = part as { type?: string; text?: string };
+			return p.type === "text" && typeof p.text === "string" ? p.text : "";
+		})
+		.filter(Boolean)
+		.join("\n");
 }
 
 export function parseAssessment(text: string): ReviewerAssessment | undefined {
