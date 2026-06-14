@@ -10,6 +10,26 @@ export type UserAuthorization = "high" | "medium" | "low" | "unknown";
 export type Outcome = "allow" | "deny";
 
 /**
+ * Granularity of inline notice messages.
+ *
+ *  - "silent":  no routine notices. Critical posture warnings still show
+ *              (sandbox unavailable, settings file malformed, sandbox-OFF
+ *              startup warning) — those tell the user something is
+ *              actively wrong or unsafe and can't be muted via this knob.
+ *  - "denials": + every blocked or denied action (reviewer deny, sandbox
+ *              denial, escape-reviewer denial, escape-reviewer unavailable,
+ *              circuit-breaker trip).
+ *  - "normal": + every allowed action (reviewer allow with rationale,
+ *              sandbox-denied-but-escape-allowed info, re-execution
+ *              outcomes). This is the default.
+ *  - "verbose":+ sandbox mode-change confirmations and initialization
+ *              warnings. For debugging.
+ *
+ * Replaces the older boolean pair `announceAllows` + `sandbox.alwaysAnnounceDenials`.
+ */
+export type NoticeLevel = "silent" | "denials" | "normal" | "verbose";
+
+/**
  * Sandbox modes for bash tool calls (see README and docs/sandbox.md).
  *
  *  - "off":               current behavior. Reviewer gates every bash call, nothing
@@ -78,11 +98,6 @@ export interface SandboxSettings {
 	 * Inline `[sandboxed]` tag on the bash tool-call display.
 	 */
 	annotateBashDisplay: boolean;
-	/**
-	 * On every sandbox denial, even when the reviewer approves the escape,
-	 * surface the violation reason in the UI as a notify.
-	 */
-	alwaysAnnounceDenials: boolean;
 }
 
 export interface ReviewerAssessment {
@@ -169,8 +184,12 @@ export interface PiAutoSettings {
 	 * Example: `[["npm", "test"], ["pnpm", "lint"]]`.
 	 */
 	extraSafeCommandPrefixes: string[][];
-	/** Verbose: print rationale inline for every allow. */
-	announceAllows: boolean;
+	/**
+	 * Granularity of inline notice messages. Replaces the older
+	 * `announceAllows` boolean + the sandbox `alwaysAnnounceDenials` boolean
+	 * with a single dial. See `NoticeLevel`.
+	 */
+	noticeLevel: NoticeLevel;
 	/** Custom policy text appended after the base policy. Empty = use defaults. */
 	customPolicy: string;
 	/**

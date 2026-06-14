@@ -21,7 +21,7 @@ const SETTINGS: PiAutoSettings = {
 	useCodexAutoReview: false,
 	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: [],
-	announceAllows: true,
+	noticeLevel: "normal",
 	customPolicy: "",
 	stripAssistantText: false,
 	stripToolResults: false,
@@ -88,7 +88,7 @@ describe("handleReviewResult: allow", () => {
 		expect(out).toBeUndefined();
 	});
 
-	it("notifies the user inline when announceAllows is on", async () => {
+	it("notifies the user inline when noticeLevel >= normal", async () => {
 		const { ctx, notify } = makeCtx();
 		const result: ReviewResult = {
 			kind: "assessed",
@@ -101,9 +101,9 @@ describe("handleReviewResult: allow", () => {
 		expect(notify.mock.calls[0][0]).toMatch(/OK by user/);
 	});
 
-	it("does NOT notify when announceAllows is off", async () => {
+	it("does NOT notify when noticeLevel = silent", async () => {
 		const { ctx, notify } = makeCtx();
-		const settings = { ...SETTINGS, announceAllows: false };
+		const settings = { ...SETTINGS, noticeLevel: "silent" };
 		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "allow" }) };
 		await handleReviewResult(result, ACTION, ctx, breaker, settings, "t1");
 		expect(notify).not.toHaveBeenCalled();

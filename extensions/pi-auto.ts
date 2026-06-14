@@ -72,7 +72,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		"credentials",
 		".env",
 	],
-	announceAllows: true,
+	noticeLevel: "normal",
 	customPolicy: "",
 	reviewerPolicySource: "default",
 	extraSafeCommandPrefixes: [],
@@ -99,7 +99,6 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		denyWrite: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
-		alwaysAnnounceDenials: true,
 	},
 };
 
@@ -243,7 +242,12 @@ export default function (pi: ExtensionAPI): void {
 				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 				else console.error(msg);
 				sandboxState.current = { kind: "broken", reason: avail.errors.join("; ") };
-			} else if (avail.warnings.length > 0 && ctx.hasUI && opts.source === "session-start") {
+			} else if (
+				avail.warnings.length > 0 &&
+				ctx.hasUI &&
+				opts.source === "session-start" &&
+				shouldNotify(settings.noticeLevel, "verbose")
+			) {
 				ctx.ui.notify(`pi-auto sandbox: ${avail.warnings.join("; ")}`, "info");
 			}
 		}
@@ -255,13 +259,15 @@ export default function (pi: ExtensionAPI): void {
 			const shouldAnnounce = opts.source === "session-start" || transition;
 			if (shouldAnnounce) {
 				if (desired === "off") {
+					// Critical posture: the sandbox is off and the user (or a default
+					// flip) put it there. Always surface this regardless of noticeLevel.
 					ctx.ui.notify(
 						"pi-auto sandbox: OFF — no OS-level backstop on bash calls. Re-enable via /pi-auto-settings.",
 						"warning",
 					);
-				} else if (transition && previous === "off") {
+				} else if (transition && previous === "off" && shouldNotify(settings.noticeLevel, "verbose")) {
 					ctx.ui.notify(`pi-auto sandbox: ${desired} — bash calls wrapped`, "info");
-				} else if (transition) {
+				} else if (transition && shouldNotify(settings.noticeLevel, "verbose")) {
 					ctx.ui.notify(`pi-auto sandbox: mode changed → ${desired}`, "info");
 				}
 			}
@@ -370,7 +376,7 @@ export default function (pi: ExtensionAPI): void {
 
 		if (reviewResult.kind === "failed") {
 			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
-			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
 				ctx.ui.notify(
 					`pi-auto: ${retryReason} (escape reviewer unavailable: ${reviewResult.reason}; leaving sandbox error in place)`,
 					"warning",
@@ -382,7 +388,7 @@ export default function (pi: ExtensionAPI): void {
 		const { assessment } = reviewResult;
 		if (assessment.outcome === "deny") {
 			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
-			if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
 				ctx.ui.notify(
 					`pi-auto ✕ ${retryReason} Reviewer denied escape (${assessment.risk_level}/${assessment.user_authorization}): ${assessment.rationale}`,
 					"warning",
@@ -410,7 +416,7 @@ export default function (pi: ExtensionAPI): void {
 
 		// Escape allowed — re-run the original command outside the sandbox.
 		recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ true);
-		if (ctx.hasUI && settings.sandbox.alwaysAnnounceDenials) {
+		if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
 			ctx.ui.notify(
 				`pi-auto: ${retryReason} Reviewer approved escape: ${assessment.rationale}`,
 				"info",
@@ -546,7 +552,7 @@ export default function (pi: ExtensionAPI): void {
 				`  pinned related entries:    up to ${settings.maxPinnedRelatedEntries}`,
 				`  summary entries kept:      up to ${settings.maxSummaryEntries}`,
 				`  rolling digest:            ${settings.enableDigest ? "on" : "off"}`,
-				`  announce allows:           ${settings.announceAllows}`,
+				`  notice level:              ${settings.noticeLevel}`,
 				`  sensitive paths:           ${settings.sensitivePathPatterns.join(", ")}`,
 			];
 			if (digestState) {
@@ -565,11 +571,19 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("pi-auto-toggle-announce", {
-		description: "Toggle inline pi-auto rationale messages for allowed actions",
+		description:
+			"DEPRECATED. Cycle pi-auto noticeLevel (silent → denials → normal → verbose). Prefer /pi-auto-settings.",
 		handler: async (_args, ctx) => {
-			settings.announceAllows = !settings.announceAllows;
+			const order: PiAutoSettings["noticeLevel"][] = [
+				"silent",
+				"denials",
+				"normal",
+				"verbose",
+			];
+			const i = order.indexOf(settings.noticeLevel);
+			settings.noticeLevel = order[(i + 1) % order.length] ?? "normal";
 			if (ctx.hasUI) {
-				ctx.ui.notify(`pi-auto announce-allows: ${settings.announceAllows}`, "info");
+				ctx.ui.notify(`pi-auto noticeLevel: ${settings.noticeLevel}`, "info");
 			}
 		},
 	});
@@ -615,7 +629,7 @@ export default function (pi: ExtensionAPI): void {
 				`ui:`,
 				`  status indicator: ${s.showStatusIndicator}`,
 				`  annotate bash:    ${s.annotateBashDisplay}`,
-				`  announce denials: ${s.alwaysAnnounceDenials}`,
+				`  notice level:     ${settings.noticeLevel} (see /pi-auto-settings)`,
 			];
 			if (recentDenials.length > 0) {
 				lines.push("", `recent denials (most recent first):`);
@@ -689,7 +703,7 @@ export async function handleReviewResult(
 
 	if (assessment.outcome === "allow") {
 		breaker.recordNonDenial(turnId);
-		if (settings.announceAllows && ctx.hasUI) {
+		if (shouldNotify(settings.noticeLevel, "normal") && ctx.hasUI) {
 			const glyph = RISK_GLYPH[assessment.risk_level];
 			ctx.ui.notify(
 				`pi-auto ${glyph} allowed (${assessment.risk_level} risk, auth=${assessment.user_authorization}): ${assessment.rationale}`,
@@ -889,6 +903,36 @@ function setDisabledStatus(
  * identity so any closures already holding a reference to the live
  * settings object see the new values. Used after settings reload.
  */
+/**
+ * Notice levels arranged from least to most chatty. The numeric index
+ * doubles as the precedence used by `shouldNotify`.
+ */
+const NOTICE_LEVEL_ORDER = ["silent", "denials", "normal", "verbose"] as const;
+
+/**
+ * Should a notification at the given severity-tier be emitted given the
+ * user's configured noticeLevel?
+ *
+ * Tiers, lowest → highest:
+ *   - "critical":  always shown. Sandbox unavailable, settings load errors,
+ *                 sandbox-OFF startup warning — the user needs to know.
+ *   - "denials":   denied / blocked actions. Reviewer deny, sandbox denial,
+ *                 escape-reviewer deny or unavailable, circuit-breaker trip.
+ *   - "normal":    successful actions worth confirming. Reviewer allow,
+ *                  sandbox-denied-but-escape-allowed, re-execution outcome.
+ *   - "verbose":   debugging-flavored. Sandbox mode-change confirmations,
+ *                  init warnings.
+ */
+export function shouldNotify(
+	noticeLevel: PiAutoSettings["noticeLevel"],
+	tier: "critical" | "denials" | "normal" | "verbose",
+): boolean {
+	if (tier === "critical") return true;
+	const tierIndex = NOTICE_LEVEL_ORDER.indexOf(tier);
+	const configuredIndex = NOTICE_LEVEL_ORDER.indexOf(noticeLevel);
+	return configuredIndex >= tierIndex;
+}
+
 function assignSettings(target: PiAutoSettings, source: PiAutoSettings): void {
 	for (const key of Object.keys(source) as Array<keyof PiAutoSettings>) {
 		// biome-ignore lint/suspicious/noExplicitAny: shallow copy of a typed shape

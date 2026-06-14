@@ -39,7 +39,7 @@ const BASE_SETTINGS: PiAutoSettings = {
 	useCodexAutoReview: false,
 	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: [],
-	announceAllows: true,
+	noticeLevel: "normal",
 	customPolicy: "",
 	stripAssistantText: false,
 	stripToolResults: false,

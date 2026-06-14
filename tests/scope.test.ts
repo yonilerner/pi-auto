@@ -18,7 +18,7 @@ const SETTINGS: PiAutoSettings = {
 	useCodexAutoReview: false,
 	extraSafeCommandPrefixes: [],
 	sensitivePathPatterns: ["~/.ssh", "~/.aws", "/etc/shadow", "credentials", ".env"],
-	announceAllows: true,
+	noticeLevel: "normal",
 	customPolicy: "",
 	stripAssistantText: false,
 	stripToolResults: false,

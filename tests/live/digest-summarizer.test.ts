@@ -267,7 +267,7 @@ function makeLiveSettings(): PiAutoSettings {
 		useCodexAutoReview: false,
 		extraSafeCommandPrefixes: [],
 		sensitivePathPatterns: [],
-		announceAllows: false,
+		noticeLevel: "silent",
 		customPolicy: "",
 		stripAssistantText: false,
 		stripToolResults: false,

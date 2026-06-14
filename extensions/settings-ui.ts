@@ -241,12 +241,19 @@ const FIELDS: FieldDescriptor[] = [
 
 	// Notifications & circuit breaker
 	{
-		id: "announceAllows",
-		label: "Announce allows inline",
-		kind: "bool",
-		settingsKey: "announceAllows",
-		read: (s) => String(s.announceAllows),
-		applyChange: (_s, raw) => parseBool(raw),
+		id: "noticeLevel",
+		label: "Inline notice level",
+		help: "silent / denials / normal / verbose. Critical posture warnings always show regardless.",
+		kind: "enum",
+		enumValues: ["silent", "denials", "normal", "verbose"],
+		settingsKey: "noticeLevel",
+		read: (s) => s.noticeLevel,
+		applyChange: (_s, raw) => {
+			if (raw !== "silent" && raw !== "denials" && raw !== "normal" && raw !== "verbose") {
+				throw new Error(`noticeLevel must be one of silent / denials / normal / verbose`);
+			}
+			return raw;
+		},
 	},
 	{
 		id: "maxConsecutiveDenialsPerTurn",
@@ -295,14 +302,6 @@ const FIELDS: FieldDescriptor[] = [
 		settingsKey: "sandbox",
 		read: (s) => String(s.sandbox.annotateBashDisplay),
 		applyChange: (s, raw) => ({ ...s.sandbox, annotateBashDisplay: parseBool(raw) }),
-	},
-	{
-		id: "sandbox.alwaysAnnounceDenials",
-		label: "Sandbox: announce every denial",
-		kind: "bool",
-		settingsKey: "sandbox",
-		read: (s) => String(s.sandbox.alwaysAnnounceDenials),
-		applyChange: (s, raw) => ({ ...s.sandbox, alwaysAnnounceDenials: parseBool(raw) }),
 	},
 ];
 
@@ -454,9 +453,41 @@ async function pickField(
 				0,
 			),
 		);
+
+		// Search bar. `/` toggles it; printable keys append; backspace deletes;
+		// enter exits search mode keeping the filter; esc clears the filter and
+		// exits search mode (esc on the list itself still cancels the picker).
+		let searchMode = false;
+		let searchTerm = "";
+		const searchBar = new Text("", 1, 0);
+		const hintBar = new Text(
+			theme.fg("dim", "↑↓ scroll • / search • enter edit • esc close"),
+			1,
+			0,
+		);
+		const refreshChrome = () => {
+			if (searchMode) {
+				searchBar.setText(
+					`${theme.fg("accent", "/")} ${theme.fg("text", searchTerm)}${theme.fg("accent", "_")}`,
+				);
+				hintBar.setText(theme.fg("dim", "type to filter • enter keep • esc clear"));
+			} else if (searchTerm.length > 0) {
+				searchBar.setText(theme.fg("muted", `(filter: ${searchTerm}) `));
+				hintBar.setText(
+					theme.fg("dim", "↑↓ scroll • / refine • enter edit • esc close"),
+				);
+			} else {
+				searchBar.setText("");
+				hintBar.setText(
+					theme.fg("dim", "↑↓ scroll • / search • enter edit • esc close"),
+				);
+			}
+		};
+		refreshChrome();
+		container.addChild(searchBar);
+
 		// Allow the primary (label) column to take up to ~40 cols so the longest
-		// field names ("Sandbox: always announce denials" ≈ 32 chars) aren't
-		// truncated. The description column flows from there onward.
+		// field names aren't truncated. The description column flows from there.
 		const list = new SelectList(items, Math.min(items.length, 16), makeSelectTheme(theme), {
 			minPrimaryColumnWidth: 24,
 			maxPrimaryColumnWidth: 40,
@@ -468,14 +499,58 @@ async function pickField(
 		};
 		list.onCancel = () => done(null);
 		container.addChild(list);
-		container.addChild(
-			new Text(theme.fg("dim", "↑↓ scroll • / search • enter edit • esc close"), 1, 0),
-		);
+		container.addChild(hintBar);
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+		const applyFilter = () => {
+			list.setFilter(searchTerm);
+			refreshChrome();
+			tui.requestRender();
+		};
+
+		const handleSearchInput = (data: string): boolean => {
+			// Returns true if the input was consumed by the search bar.
+			if (data === "\x1b") {
+				// esc — clear and exit search mode (don't cancel the whole picker).
+				searchMode = false;
+				searchTerm = "";
+				applyFilter();
+				return true;
+			}
+			if (data === "\r" || data === "\n") {
+				// enter — exit search mode, keep filter, let arrows / enter operate
+				// on the list again.
+				searchMode = false;
+				refreshChrome();
+				tui.requestRender();
+				return true;
+			}
+			if (data === "\x7f" || data === "\b") {
+				if (searchTerm.length > 0) searchTerm = searchTerm.slice(0, -1);
+				applyFilter();
+				return true;
+			}
+			// Only consume printable single-byte characters; pass everything else
+			// through so arrow keys / etc. still work even while in search mode.
+			if (data.length === 1 && data >= " " && data <= "~") {
+				searchTerm += data;
+				applyFilter();
+				return true;
+			}
+			return false;
+		};
+
 		return {
 			render: (w) => container.render(w),
 			invalidate: () => container.invalidate(),
 			handleInput: (data) => {
+				if (!searchMode && data === "/") {
+					searchMode = true;
+					refreshChrome();
+					tui.requestRender();
+					return;
+				}
+				if (searchMode && handleSearchInput(data)) return;
 				list.handleInput(data);
 				tui.requestRender();
 			},

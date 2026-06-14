@@ -27,7 +27,7 @@ const DEFAULTS: PiAutoSettings = {
 	enableDigest: true,
 	useCodexAutoReview: false,
 	sensitivePathPatterns: ["~/.ssh", "~/.aws"],
-	announceAllows: true,
+	noticeLevel: "normal",
 	customPolicy: "",
 	reviewerPolicySource: "default",
 	extraSafeCommandPrefixes: [],
@@ -43,7 +43,6 @@ const DEFAULTS: PiAutoSettings = {
 		denyWrite: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
-		alwaysAnnounceDenials: true,
 	},
 };
 
@@ -346,7 +345,6 @@ describe("saveSettingField", () => {
 				denyWrite: [],
 				showStatusIndicator: true,
 				annotateBashDisplay: true,
-				alwaysAnnounceDenials: true,
 			},
 		});
 		const loaded = loadSettings({

@@ -125,6 +125,8 @@ Interactive form, opened with the slash command. The flow:
 2. Pick a field; each row shows the field's current effective value plus the layer it loaded from (so you can see at a glance when you're editing a field that's already shadowed by a higher-precedence layer).
 3. The editor depends on the field type: boolean / enum fields show a small picker, string / number fields open a single-line input.
 
+**Search.** Press `/` in the field picker to filter by label / description. Type to refine, Enter to keep the filter and navigate, Esc to clear. The filter is fuzzy across the row's primary column (the field name) and its description, so typing `noise`, `notice`, `sand` etc. each surface a useful subset.
+
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required.
 
 The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
@@ -186,13 +188,15 @@ These control whether the reviewer sees the agent's own prose and tool outputs. 
 
 How allows are surfaced and when a runaway loop trips the circuit breaker.
 
-| Setting                          | Default | What it does |
-| -------------------------------- | ------- | ------------ |
-| `announceAllows`                 | `true`  | Show a one-line inline notification on every allow (· / ○ / △ risk glyph + rationale). Toggle live with `/pi-auto-toggle-announce`. |
-| `maxConsecutiveDenialsPerTurn`   | `3`     | After this many consecutive denials in a turn, the circuit breaker interrupts and surfaces a user prompt. Matches Codex's default. |
-| `maxTotalDenialsPerTurn`         | `10`    | After this many total denials in a turn, the circuit breaker fires even if the consecutive counter is below threshold. Matches Codex's default. |
+| Setting                          | Default    | What it does |
+| -------------------------------- | ---------- | ------------ |
+| `noticeLevel`                    | `"normal"` | Granularity of inline notice messages. `"silent"` = no routine notices; `"denials"` = + blocks and denied actions; `"normal"` = + reviewer allows and sandbox-allowed escapes; `"verbose"` = + sandbox mode-change confirmations and init warnings. Critical posture warnings (sandbox unavailable, sandbox-OFF startup warning, malformed settings file) always show regardless. `/pi-auto-toggle-announce` cycles through the levels in order. |
+| `maxConsecutiveDenialsPerTurn`   | `3`        | After this many consecutive denials in a turn, the circuit breaker interrupts and surfaces a user prompt. Matches Codex's default. |
+| `maxTotalDenialsPerTurn`         | `10`       | After this many total denials in a turn, the circuit breaker fires even if the consecutive counter is below threshold. Matches Codex's default. |
 
-Denials always emit — they aren't gated by `announceAllows`. Review failures (timeout, no API key, unparseable response) fall back to a user prompt in interactive mode and fail closed (block) in non-interactive modes (`-p`, JSON).
+Review failures (timeout, no API key, unparseable response) fall back to a user prompt in interactive mode and fail closed (block) in non-interactive modes (`-p`, JSON).
+
+The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it's been folded into `noticeLevel` (sandbox-related notifications obey the same tiered scheme as the reviewer's). The old `announceAllows` boolean was similarly replaced.
 
 ## Commands
 
@@ -200,7 +204,7 @@ Denials always emit — they aren't gated by `announceAllows`. Review failures (
 - `/pi-auto-settings` — edit settings interactively. Saves to user-global or per-project JSON, applies live. See [§`/pi-auto-settings`](#pi-auto-settings).
 - `/pi-auto-disable` — pause review. All tool calls run without pi-auto until `/pi-auto-enable`. See [Pausing the reviewer](#pausing-the-reviewer).
 - `/pi-auto-enable` — re-enable review.
-- `/pi-auto-toggle-announce` — toggle inline rationale messages for allowed actions.
+- `/pi-auto-toggle-announce` — cycle `noticeLevel` through silent / denials / normal / verbose. Live, in-session only. Prefer `/pi-auto-settings` for persistent changes.
 - `/pi-auto-sandbox` — show sandbox mode, configuration, and recent denials.
 
 ## Upstream sync

@@ -42,7 +42,6 @@ function makeSettings(overrides: Partial<SandboxSettings> = {}): SandboxSettings
 		denyWrite: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
-		alwaysAnnounceDenials: true,
 		...overrides,
 	};
 }
