@@ -526,10 +526,20 @@ classification and only accepts path candidates that look path-shaped
 (`/`, `~/`, `./`, `../`). These retry reasons now say
 `Sandbox denied local socket/listen access.`
 
-**Test coverage.** 53 unit tests in `tests/sandbox.test.ts` cover the
+**ASRT violation paths win over high-level stderr paths.** GitButler
+showed why the actual denied operation must be surfaced, not just the
+application's logical error path: SQLite reports the logical database as
+`but.sqlite`, while the sandbox may have denied creating the WAL sidecar
+`but.sqlite-wal`. `buildRetryReason` now parses `file-(read|write)-...`
+entries from the ASRT `<sandbox_violations>` block before falling back
+to stderr-shaped paths, and includes the access type + operation in the
+message (for example, `Sandbox denied filesystem write access to
+.../but.sqlite-wal (file-write-create).`).
+
+**Test coverage.** 55 unit tests in `tests/sandbox.test.ts` cover the
 noise filter, the extended pattern table, both new path-extraction
-shapes, local socket/listen classification, and the network-attempt-wins
-behavior in `buildRetryReason`.
+shapes, local socket/listen classification, ASRT violation-path priority,
+and the network-attempt-wins behavior in `buildRetryReason`.
 The e2e probe at `tests/sandbox-e2e.test.ts` (gated by
 `PI_AUTO_SANDBOX_E2E=1`) covers 16 shapes against the real sandbox
 runtime; baseline commands must classify as not-denied, network shapes

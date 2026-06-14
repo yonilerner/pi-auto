@@ -549,6 +549,12 @@ export async function runBareCommand(
  * this stderr (see `build_denial_reason_from_output` in their orchestrator);
  * we don't have to.
  */
+export interface DeniedFilesystemViolation {
+	operation: string;
+	access: "read" | "write";
+	path: string;
+}
+
 export function extractDeniedPathFromStderr(combinedOutput: string): string | undefined {
 	// Shape 1: bash redirection / cat / tee on macOS.
 	//   `/bin/bash: /Users/me/.ssh/test: Operation not permitted`
@@ -574,10 +580,18 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 	//   `python3.11(12345) deny(1) file-write-create /private/tmp/foo`
 	// This is the cleanest signal when stderr formatting doesn't fit either
 	// shape above (or the operation was caught before any stderr was written).
-	const storeShape = /\bdeny\(\d+\)\s+file-(?:write|read)-[a-z-]+\s+(\S+)/i;
-	m = storeShape.exec(combinedOutput);
-	if (m?.[1]) {
-		return normalizeDeniedPathCandidate(m[1]);
+	return extractDeniedFilesystemViolation(combinedOutput)?.path;
+}
+
+export function extractDeniedFilesystemViolation(
+	combinedOutput: string,
+): DeniedFilesystemViolation | undefined {
+	for (const line of combinedOutput.split("\n")) {
+		const m = /\bdeny\(\d+\)\s+(file-(write|read)-[a-z-]+)\s+(.+)$/i.exec(line.trim());
+		if (!m?.[1] || !m[2] || !m[3]) continue;
+		const path = normalizeDeniedPathCandidate(m[3]);
+		if (!path) continue;
+		return { operation: m[1], access: m[2].toLowerCase() as "read" | "write", path };
 	}
 	return undefined;
 }
@@ -660,6 +674,10 @@ export function buildRetryReason(
 	const isNetwork = /network|proxy|allowlist/i.test(denialReason);
 	if (isNetwork) {
 		return `Sandbox denied network access.`;
+	}
+	const fsViolation = extractDeniedFilesystemViolation(combinedOutput);
+	if (fsViolation) {
+		return `Sandbox denied filesystem ${fsViolation.access} access to ${fsViolation.path} (${fsViolation.operation}).`;
 	}
 	const path = extractDeniedPathFromStderr(combinedOutput);
 	if (path) {
