@@ -104,7 +104,7 @@ please try that again
 
 ## Configuration
 
-The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. Run `/pi-auto-settings` to edit them interactively. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
+The defaults live in `extensions/pi-auto.ts` (`DEFAULT_SETTINGS`). Run `/pi-auto` inside pi to see the active settings. Run `/pi-auto-settings` to edit them interactively, or `/pi-auto-reload-settings` after editing the JSON files by hand. All settings are typed in `extensions/types.ts` as `PiAutoSettings`.
 
 ### Where settings come from
 
@@ -127,9 +127,9 @@ Interactive form, opened with the slash command. The flow:
 
 **Search.** Press `/` in the field picker to filter by label / description. Type to refine, Enter to keep the filter and navigate, Esc to clear. The filter is fuzzy across the row's primary column (the field name) and its description, so typing `noise`, `notice`, `sand` etc. each surface a useful subset.
 
-Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required.
+Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -202,6 +202,7 @@ The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it
 
 - `/pi-auto` — show current configuration and whether the reviewer is currently enabled.
 - `/pi-auto-settings` — edit settings interactively. Saves to user-global or per-project JSON, applies live. See [§`/pi-auto-settings`](#pi-auto-settings).
+- `/pi-auto-reload-settings` — reload layered settings from disk/env and reapply live side effects (circuit breaker thresholds, sandbox runtime/status). Use after manual JSON edits.
 - `/pi-auto-disable` — pause review. All tool calls run without pi-auto until `/pi-auto-enable`. See [Pausing the reviewer](#pausing-the-reviewer).
 - `/pi-auto-enable` — re-enable review.
 - `/pi-auto-toggle-announce` — cycle `noticeLevel` through silent / denials / normal / verbose. Live, in-session only. Prefer `/pi-auto-settings` for persistent changes.

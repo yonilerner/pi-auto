@@ -67,6 +67,7 @@ import {
 	defaultPerProjectWritePath,
 	loadSettings,
 	saveSettingField,
+	type LoadedSettings,
 } from "./settings-store.ts";
 import type {
 	PiAutoSettings,
@@ -341,6 +342,23 @@ export function registerSettingsCommand(pi: ExtensionAPI, deps: SettingsUIDeps):
 			await editLoop(ctx, layer, deps);
 		},
 	});
+
+	pi.registerCommand("pi-auto-reload-settings", {
+		description:
+			"Reload pi-auto settings from JSON/env and reapply live side effects.",
+		handler: async (_args, ctx) => {
+			const loaded = await reloadAndApplySettings(ctx, deps);
+			const lines = [
+				"pi-auto settings: reloaded",
+				`  user-global: ${loaded.paths.userGlobal ?? "(none)"}`,
+				`  per-project: ${loaded.paths.perProject ?? "(none found)"}`,
+			];
+			if (loaded.warnings.length > 0) {
+				lines.push("", ...loaded.warnings);
+			}
+			notifyOrLog(ctx, lines.join("\n"), loaded.warnings.length > 0 ? "warning" : "info");
+		},
+	});
 }
 
 /* -------- step 1: layer picker -------- */
@@ -399,11 +417,10 @@ async function editLoop(
 		if (!picked) return; // esc closes the whole UI
 		lastFieldId = picked.id;
 		const ok = await editField(ctx, layer, picked, deps);
-			if (ok === "saved") {
+		if (ok === "saved") {
 			// Reload settings so the next iteration's display reflects the change
 			// and any other layer that shadows this field shows up correctly.
-			reloadSettings(ctx, deps);
-			if (deps.onSettingsApplied) await deps.onSettingsApplied(ctx);
+			await reloadAndApplySettings(ctx, deps);
 		}
 	}
 }
@@ -609,8 +626,9 @@ async function editField(
 		return "cancelled";
 	}
 
+	const savedValue = renderSavedFieldValue(settings, field, nextValue);
 	ctx.ui.notify(
-		`pi-auto settings: saved ${field.label} to ${layer} (${filePath})`,
+		formatSavedSettingNotification(field.label, savedValue, layer, filePath),
 		"info",
 	);
 	return "saved";
@@ -693,11 +711,56 @@ function resolveLayerWritePath(
 	return defaultPerProjectWritePath(ctx.cwd);
 }
 
-function reloadSettings(ctx: ExtensionContext, deps: SettingsUIDeps): void {
+async function reloadAndApplySettings(
+	ctx: ExtensionContext,
+	deps: SettingsUIDeps,
+): Promise<LoadedSettings> {
 	const loaded = loadSettings({ defaults: deps.defaults, cwd: ctx.cwd });
 	deps.applySettings(loaded.settings);
 	deps.setLayers(loaded.layers);
 	deps.setPaths(loaded.paths);
+	if (deps.onSettingsApplied) await deps.onSettingsApplied(ctx);
+	return loaded;
+}
+
+function renderSavedFieldValue(
+	settings: PiAutoSettings,
+	field: FieldDescriptor,
+	nextValue: PiAutoSettings[keyof PiAutoSettings],
+): string {
+	const nextSettings: PiAutoSettings = {
+		...settings,
+		sandbox: { ...settings.sandbox },
+	};
+	// biome-ignore lint/suspicious/noExplicitAny: FieldDescriptor ties settingsKey to nextValue at runtime.
+	(nextSettings as any)[field.settingsKey] = nextValue;
+	return formatSavedSettingValue(field.read(nextSettings));
+}
+
+export function formatSavedSettingValue(value: string): string {
+	let rendered = value;
+	if (rendered === "" || rendered.trim() !== rendered || /[\r\n\t]/.test(rendered)) {
+		rendered = JSON.stringify(rendered);
+	}
+	return rendered.length <= 160 ? rendered : `${rendered.slice(0, 159)}…`;
+}
+
+export function formatSavedSettingNotification(
+	label: string,
+	value: string,
+	layer: string,
+	filePath: string,
+): string {
+	return `pi-auto settings: saved ${label} = ${value} to ${layer} (${filePath})`;
+}
+
+function notifyOrLog(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {
+	if (ctx.hasUI) {
+		ctx.ui.notify(message, level);
+		return;
+	}
+	const log = level === "warning" ? console.error : console.log;
+	log(message);
 }
 
 /* -------- helpers -------- */
