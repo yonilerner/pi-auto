@@ -548,6 +548,26 @@ denials must surface the path. The probe writes a structured
 `results.json` + `summary.md` to `/tmp/pi-agent/sandbox-e2e/<ts>/` for
 human review.
 
+### Settings save confirmations + explicit reload
+
+Closed the two leftover configuration paper cuts from the layered
+settings work. `/pi-auto-settings` save notifications now include the
+rendered value being persisted, so a confirmation reads like `saved
+Reviewer model = gpt-5-mini to user-global (...)` instead of only naming
+the field and file. Empty / whitespace-sensitive values are JSON-quoted
+in the notification so they are visible at a glance.
+
+Added `/pi-auto-reload-settings` as the supported path after manual JSON
+edits. It reruns the same layered loader (`DEFAULT_SETTINGS` →
+user-global → per-project → env), mutates the live settings object,
+refreshes layer/path attribution, and invokes the same side-effect hook
+used after UI saves: circuit-breaker thresholds are rebound and the
+sandbox runtime/status is reconciled. Because ASRT captures sandbox
+configuration at initialization, a reload resets any ready sandbox
+runtime so the next bash call reinitializes with the new config. Load
+warnings are printed in the reload result rather than requiring a pi
+restart to discover malformed files.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).

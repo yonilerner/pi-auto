@@ -9,6 +9,7 @@
 	"private": true,
 	"scripts": {
 		"typecheck": "tsc --noEmit",
+		"ci": "npm run typecheck && npm test",
 		"test": "vitest run --exclude '**/live/**'",
 		"test:watch": "vitest --exclude '**/live/**'",
 		"test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live",
