@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
-import { fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxUnsandboxedPrefix } from "../extensions/pi-auto.ts";
+import { fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
@@ -34,7 +34,7 @@ const SETTINGS: PiAutoSettings = {
 		denyRead: [],
 		allowWrite: [],
 		denyWrite: [],
-		unsandboxedCommandPrefixes: [],
+		reviewOnlyCommandPrefixes: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
@@ -88,21 +88,21 @@ function assessment(opts: Partial<ReviewerAssessment> & Pick<ReviewerAssessment,
 	};
 }
 
-describe("matchesSandboxUnsandboxedPrefix", () => {
+describe("matchesSandboxReviewOnlyPrefix", () => {
 	it("matches plain commands whose argv starts with a configured prefix", () => {
-		expect(matchesSandboxUnsandboxedPrefix("gh auth status", [["gh"]])).toBe(true);
-		expect(matchesSandboxUnsandboxedPrefix("/usr/bin/gh pr create", [["gh", "pr"]])).toBe(true);
-		expect(matchesSandboxUnsandboxedPrefix("gh pr create", [["gh", "auth"]])).toBe(false);
+		expect(matchesSandboxReviewOnlyPrefix("gh auth status", [["gh"]])).toBe(true);
+		expect(matchesSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["gh", "pr"]])).toBe(true);
+		expect(matchesSandboxReviewOnlyPrefix("gh pr create", [["gh", "auth"]])).toBe(false);
 	});
 
 	it("requires every command in a simple compound script to match", () => {
-		expect(matchesSandboxUnsandboxedPrefix("gh auth status && gh pr list", [["gh"]])).toBe(true);
-		expect(matchesSandboxUnsandboxedPrefix("gh auth status && rm -rf /tmp/x", [["gh"]])).toBe(false);
+		expect(matchesSandboxReviewOnlyPrefix("gh auth status && gh pr list", [["gh"]])).toBe(true);
+		expect(matchesSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]])).toBe(false);
 	});
 
 	it("does not match shell constructs the plain-command parser rejects", () => {
-		expect(matchesSandboxUnsandboxedPrefix("GH_DEBUG=api gh auth status", [["gh"]])).toBe(false);
-		expect(matchesSandboxUnsandboxedPrefix("gh auth status > out.txt", [["gh"]])).toBe(false);
+		expect(matchesSandboxReviewOnlyPrefix("GH_DEBUG=api gh auth status", [["gh"]])).toBe(false);
+		expect(matchesSandboxReviewOnlyPrefix("gh auth status > out.txt", [["gh"]])).toBe(false);
 	});
 });
 

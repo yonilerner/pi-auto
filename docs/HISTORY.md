@@ -615,7 +615,7 @@ rather than the bubblewrap mount-point strategy.
 
 ### Reviewer-gated unsandboxed command prefixes
 
-Added `sandbox.unsandboxedCommandPrefixes`, a list of bash argv prefixes
+Added `sandbox.reviewOnlyCommandPrefixes`, a list of bash argv prefixes
 that skip the initial sandbox attempt and run only after reviewer
 approval. This covers tools that fail under ASRT in misleading ways — for
 example `gh`, whose token may live in an OS keyring reached through a
