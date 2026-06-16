@@ -33,6 +33,7 @@ import {
 	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
 	filterNoiseFromAnnotation,
+	applyDangerousFilesPolicy,
 	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
 	withSandboxGitExcludes,
@@ -48,6 +49,8 @@ function makeSettings(overrides: Partial<SandboxSettings> = {}): SandboxSettings
 		denyRead: [],
 		allowWrite: [],
 		denyWrite: [],
+		reviewOnlyCommandPrefixes: [],
+		allowedDangerousFiles: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 		...overrides,
@@ -587,6 +590,64 @@ describe("filterNoiseFromAnnotation", () => {
 		for (const op of NOISE) {
 			expect(op).toMatch(/^(?:sysctl-read|mach-lookup)/);
 		}
+	});
+});
+
+describe("applyDangerousFilesPolicy", () => {
+	// Restore the default policy after each test so other tests in this file
+	// (and downstream e2e tests) see ASRT's full DANGEROUS_FILES array.
+	afterEach(() => {
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [] }));
+	});
+
+	it("removes listed files from the deny set", () => {
+		expect(getAsrtMandatoryDenyGitExcludePatterns()).toContain(".gitmodules");
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [".gitmodules"] }));
+		expect(getAsrtMandatoryDenyGitExcludePatterns()).not.toContain(".gitmodules");
+		// Other entries are untouched.
+		expect(getAsrtMandatoryDenyGitExcludePatterns()).toContain(".gitconfig");
+		expect(getAsrtMandatoryDenyGitExcludePatterns()).toContain(".bashrc");
+	});
+
+	it("handles multiple entries", () => {
+		applyDangerousFilesPolicy(
+			makeSettings({ allowedDangerousFiles: [".gitmodules", ".ripgreprc"] }),
+		);
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns).not.toContain(".gitmodules");
+		expect(patterns).not.toContain(".ripgreprc");
+		expect(patterns).toContain(".gitconfig");
+	});
+
+	it("restores entries when the setting is cleared and preserves original order", () => {
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [".gitmodules"] }));
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [] }));
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns).toContain(".gitmodules");
+		// Original ASRT order has .gitconfig before .gitmodules. Filtering and
+		// re-applying must not reorder.
+		const gitConfigIdx = patterns.indexOf(".gitconfig");
+		const gitModulesIdx = patterns.indexOf(".gitmodules");
+		expect(gitConfigIdx).toBeGreaterThanOrEqual(0);
+		expect(gitModulesIdx).toBeGreaterThan(gitConfigIdx);
+	});
+
+	it("silently ignores unknown entries", () => {
+		applyDangerousFilesPolicy(
+			makeSettings({ allowedDangerousFiles: [".totally-not-real", ".gitmodules"] }),
+		);
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns).not.toContain(".gitmodules");
+		expect(patterns).not.toContain(".totally-not-real");
+		expect(patterns).toContain(".gitconfig");
+	});
+
+	it("is idempotent when called repeatedly with the same settings", () => {
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [".gitmodules"] }));
+		applyDangerousFilesPolicy(makeSettings({ allowedDangerousFiles: [".gitmodules"] }));
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns.filter((p) => p === ".gitmodules")).toEqual([]);
+		expect(patterns.filter((p) => p === ".gitconfig")).toEqual([".gitconfig"]);
 	});
 });
 

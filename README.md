@@ -129,7 +129,7 @@ Interactive form, opened with the slash command. The flow:
 
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `reviewOnlyCommandPrefixes`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `reviewOnlyCommandPrefixes` / `allowedDangerousFiles`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -219,6 +219,24 @@ The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it
 The matcher only routes plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`. Command names are matched exactly: `[["gh"]]` matches only bare `gh`, not `./gh` or `/tmp/gh`; configure a pathful command explicitly, e.g. `[["/usr/bin/gh"]]`.
 
 If a command appears to invoke a review-only prefix but uses unsupported shell syntax, pi-auto blocks it with a targeted repair message instead of falling back to sandbox execution. For example, `gh pr create --body $'...\\n...'`, `GH_DEBUG=api gh auth status`, `gh auth status > out.txt`, and `gh auth status && rm -rf /tmp/x` are blocked before execution; rewrite them as plain argv-only commands (for multiline text, use a temp file plus `--body-file`).
+
+### Sandbox: silencing `DANGEROUS_FILES` deny noise
+
+`@anthropic-ai/sandbox-runtime` hardcodes a list of `DANGEROUS_FILES` (`.gitconfig`, `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`, `.mcp.json`) into its mandatory-deny set, so ASRT plants a deny-only placeholder for each at `<cwd>` for every sandboxed command. Tools that stat those paths (e.g. `git`/`but`/`gh` stat `.gitmodules` on essentially every invocation to detect submodules) then log a benign `permission denied` per command.
+
+`sandbox.allowedDangerousFiles` is a list of basenames to remove from that deny set. Empty (default) preserves the full ASRT deny list; add entries to opt individual files back in. Example:
+
+```json
+{
+  "sandbox": {
+    "allowedDangerousFiles": [".gitmodules"]
+  }
+}
+```
+
+Edit the JSON directly (this is a list-typed field, not in `/pi-auto-settings`), then `/pi-auto-reload-settings`.
+
+Trade-off: each entry removed is one fewer guard against shell-rc / config-file exploits inside the sandbox. The files aren't equally risky — `.gitconfig` allows `[core] sshCommand`-style code execution and `.bashrc`/`.zshrc` are obvious; `.gitmodules` is inert unless you also run `git submodule update` (or equivalent) in the sandbox. Only opt in to files whose threat model you've thought about.
 
 ## Commands
 

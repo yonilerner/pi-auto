@@ -99,6 +99,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		allowWrite: ["."],
 		denyWrite: [],
 		reviewOnlyCommandPrefixes: [],
+		allowedDangerousFiles: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
@@ -529,7 +530,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		try {
-			const wrapped = await wrapBashCommand(originalCommand, ctx.cwd);
+			const wrapped = await wrapBashCommand(originalCommand, ctx.cwd, settings.sandbox);
 			// Mutate the event input in place so pi runs the wrapped command. Per
 			// the pi extension docs (tool_call) this is the supported path for
 			// argument patching. The user will see the wrapped form in the bash

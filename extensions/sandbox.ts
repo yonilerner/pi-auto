@@ -24,6 +24,18 @@ import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { DANGEROUS_FILES, getDangerousDirectories } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+
+/**
+ * Mutable view of ASRT's `DANGEROUS_FILES` export. The runtime declares it
+ * `readonly` in its `.d.ts`, but the underlying value is a plain array shared
+ * across the linux and macOS sandbox utils — both re-read it on every
+ * `wrapWithSandbox` / sandbox profile generation. Splicing in place is enough
+ * to toggle a single entry on/off; no re-init is needed.
+ */
+const MUTABLE_DANGEROUS_FILES = DANGEROUS_FILES as unknown as string[];
+/** Snapshot of `DANGEROUS_FILES` at module load, so flipping the setting back
+ * off can restore an entry to its original index. */
+const ORIGINAL_DANGEROUS_FILES: readonly string[] = [...DANGEROUS_FILES];
 import type { PiAutoSettings, SandboxSettings } from "./types.ts";
 
 export interface SandboxAvailability {
@@ -155,6 +167,24 @@ export function checkSandboxAvailability(settings: SandboxSettings): SandboxAvai
  * the runtime's built-in sensitive-path denies) and we only add explicit
  * denyRead / allowRead entries from the user.
  */
+/**
+ * Apply pi-auto's overrides to ASRT's hardcoded `DANGEROUS_FILES` array.
+ *
+ * Reconciles the live array against ORIGINAL_DANGEROUS_FILES minus
+ * `settings.allowedDangerousFiles`. Unknown entries in `allowedDangerousFiles`
+ * (typos, names ASRT doesn't actually ship) are silently ignored. Safe to
+ * call repeatedly; idempotent.
+ *
+ * Called from `ensureSandboxReady` (covers settings-change re-init) and from
+ * `wrapBashCommand` (defense in depth in case the sandbox is initialized
+ * through another entry point).
+ */
+export function applyDangerousFilesPolicy(settings: SandboxSettings): void {
+	const allowSet = new Set(settings.allowedDangerousFiles ?? []);
+	const desired = ORIGINAL_DANGEROUS_FILES.filter((name) => !allowSet.has(name));
+	MUTABLE_DANGEROUS_FILES.splice(0, MUTABLE_DANGEROUS_FILES.length, ...desired);
+}
+
 export function buildSandboxRuntimeConfig(
 	settings: SandboxSettings,
 	_cwd: string,
@@ -189,6 +219,9 @@ export async function ensureSandboxReady(
 		state.current = { kind: "disabled" };
 		return state.current;
 	}
+	// Re-apply the DANGEROUS_FILES policy on every call so a live settings
+	// change picks up before the next sandbox initialize. Idempotent.
+	applyDangerousFilesPolicy(settings.sandbox);
 	if (state.current.kind === "ready") return state.current;
 	if (state.current.kind === "initializing") return state.current.init;
 	if (state.current.kind === "broken") return state.current;
@@ -256,7 +289,12 @@ export async function shutdownSandbox(state: { current: SandboxState }): Promise
  * we don't need to add any quoting ourselves; we hand the raw command string
  * through.
  */
-export async function wrapBashCommand(command: string, cwd: string = process.cwd()): Promise<string> {
+export async function wrapBashCommand(
+	command: string,
+	cwd: string = process.cwd(),
+	sandbox?: SandboxSettings,
+): Promise<string> {
+	if (sandbox) applyDangerousFilesPolicy(sandbox);
 	const commandForSandbox = isLinuxPlatform() ? withSandboxGitExcludes(command, cwd) : command;
 	return SandboxManager.wrapWithSandbox(commandForSandbox);
 }

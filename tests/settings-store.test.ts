@@ -41,6 +41,8 @@ const DEFAULTS: PiAutoSettings = {
 		denyRead: [],
 		allowWrite: ["."],
 		denyWrite: [],
+		reviewOnlyCommandPrefixes: [],
+		allowedDangerousFiles: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
