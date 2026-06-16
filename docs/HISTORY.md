@@ -621,9 +621,12 @@ approval. This covers tools that fail under ASRT in misleading ways — for
 example `gh`, whose token may live in an OS keyring reached through a
 Unix socket that the Linux sandbox blocks, surfacing as a normal GitHub
 auth failure rather than a sandbox denial. Matching is deliberately
-narrow: the bash script must parse as plain word-only commands, and every
-command in a compound script must match one configured prefix before the
-sandbox is bypassed.
+narrow: plain word-only scripts whose commands all match are routed to
+the reviewer; commands that appear to invoke a configured prefix but use
+unsupported shell syntax are blocked with a targeted repair message
+instead of silently falling back to sandbox execution. This preserves the
+"review-only means do not sandbox" contract without treating complex
+shell constructs as safe to route.
 
 ## Open work
 
