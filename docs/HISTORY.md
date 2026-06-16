@@ -595,6 +595,18 @@ from ASRT's own mandatory-deny list (`DANGEROUS_FILES` +
 concatenated into the generated file so the override does not drop normal
 ignore behavior.
 
+### Reviewer-gated unsandboxed command prefixes
+
+Added `sandbox.unsandboxedCommandPrefixes`, a list of bash argv prefixes
+that skip the initial sandbox attempt and run only after reviewer
+approval. This covers tools that fail under ASRT in misleading ways — for
+example `gh`, whose token may live in an OS keyring reached through a
+Unix socket that the Linux sandbox blocks, surfacing as a normal GitHub
+auth failure rather than a sandbox denial. Matching is deliberately
+narrow: the bash script must parse as plain word-only commands, and every
+command in a compound script must match one configured prefix before the
+sandbox is bypassed.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).
