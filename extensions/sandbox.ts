@@ -257,7 +257,8 @@ export async function shutdownSandbox(state: { current: SandboxState }): Promise
  * through.
  */
 export async function wrapBashCommand(command: string, cwd: string = process.cwd()): Promise<string> {
-	return SandboxManager.wrapWithSandbox(withSandboxGitExcludes(command, cwd));
+	const commandForSandbox = isLinuxPlatform() ? withSandboxGitExcludes(command, cwd) : command;
+	return SandboxManager.wrapWithSandbox(commandForSandbox);
 }
 
 /**
@@ -281,7 +282,12 @@ export function cleanupAfterSandboxCommand(): void {
  * sandbox, so git commands run by any tool (`git`, `but`, npm scripts, etc.)
  * must inherit a global exclude that hides the exact ASRT-protected names.
  */
-export function withSandboxGitExcludes(command: string, cwd: string): string {
+export function withSandboxGitExcludes(
+	command: string,
+	cwd: string,
+	platform: NodeJS.Platform = process.platform,
+): string {
+	if (!isLinuxPlatform(platform)) return command;
 	const excludeFile = ensureSandboxGitExcludesFile(cwd);
 	const existingCount = parseGitConfigCount(process.env.GIT_CONFIG_COUNT);
 	const assignments = [
@@ -369,6 +375,10 @@ function shellSingleQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+function isLinuxPlatform(platform: NodeJS.Platform = process.platform): boolean {
+	return platform === "linux";
+}
+
 /**
  * Text-pattern denial detection. Pure function, no SandboxManager required.
  *
@@ -402,6 +412,7 @@ const HARD_PROXY_MARKERS: Array<[string, string]> = [
 export function detectSandboxDenial(
 	isError: boolean,
 	combinedOutput: string,
+	platform: NodeJS.Platform = process.platform,
 ): { denied: boolean; reason: string } {
 	const lower = combinedOutput.toLowerCase();
 	// Hard proxy markers ALWAYS count, even on exit 0 — the response was
@@ -457,7 +468,7 @@ export function detectSandboxDenial(
 			return { denied: true, reason: label };
 		}
 	}
-	if (extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput)) {
+	if (isLinuxPlatform(platform) && extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput)) {
 		return { denied: true, reason: "filesystem operation denied by sandbox" };
 	}
 	return { denied: false, reason: "" };
@@ -564,6 +575,7 @@ export function detectSandboxDenialForCommand(
 	originalCommand: string,
 	isError: boolean,
 	combinedOutput: string,
+	platform: NodeJS.Platform = process.platform,
 ): { denied: boolean; reason: string; annotatedOutput: string } {
 	const rawAnnotated = SandboxManager.annotateStderrWithSandboxFailures(
 		originalCommand,
@@ -574,14 +586,14 @@ export function detectSandboxDenialForCommand(
 	if (hasStoreViolations) {
 		// Try to surface a more specific reason from the annotation when possible;
 		// fall back to text-pattern detection for the human-readable label.
-		const textDetect = detectSandboxDenial(isError, annotated);
+		const textDetect = detectSandboxDenial(isError, annotated, platform);
 		return {
 			denied: true,
 			reason: textDetect.reason || "sandbox denial recorded by ASRT violation store",
 			annotatedOutput: annotated,
 		};
 	}
-	const textOnly = detectSandboxDenial(isError, combinedOutput);
+	const textOnly = detectSandboxDenial(isError, combinedOutput, platform);
 	return {
 		denied: textOnly.denied,
 		reason: textOnly.reason,
@@ -669,7 +681,10 @@ export interface DeniedFilesystemViolation {
 	path: string;
 }
 
-export function extractDeniedPathFromStderr(combinedOutput: string): string | undefined {
+export function extractDeniedPathFromStderr(
+	combinedOutput: string,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
 	// Shape 1: bash redirection / cat / tee on macOS.
 	//   `/bin/bash: /Users/me/.ssh/test: Operation not permitted`
 	//   `cat: /etc/passwd: Operation not permitted`
@@ -689,8 +704,10 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 		const stripped = normalizeDeniedPathCandidate(m[1]);
 		if (stripped) return stripped;
 	}
-	const mandatoryDenyPath = extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput);
-	if (mandatoryDenyPath) return mandatoryDenyPath;
+	if (isLinuxPlatform(platform)) {
+		const mandatoryDenyPath = extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput);
+		if (mandatoryDenyPath) return mandatoryDenyPath;
+	}
 	// Shape 3: parse the ASRT violation store directly. The annotated block
 	// includes lines like:
 	//   `python3.11(12345) deny(1) file-write-create /private/tmp/foo`

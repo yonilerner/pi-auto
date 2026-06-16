@@ -342,10 +342,21 @@ describe("detectSandboxDenialForCommand", () => {
 			"Caused by:",
 			"    Permission denied (os error 13)",
 		].join("\n");
-		const out = detectSandboxDenialForCommand("but status -fv", true, output);
+		const out = detectSandboxDenialForCommand("but status -fv", true, output, "linux");
 		expect(out.denied).toBe(true);
 		expect(out.reason).toBe("filesystem operation denied by sandbox");
 		expect(buildRetryReason(out.reason, out.annotatedOutput, [])).toContain(".gitmodules");
+	});
+
+	it("does not apply the Linux mandatory-deny Permission denied heuristic on macOS", () => {
+		const output = [
+			"Error: Could not read '.gitmodules' file",
+			"",
+			"Caused by:",
+			"    Permission denied (os error 13)",
+		].join("\n");
+		const out = detectSandboxDenialForCommand("but status -fv", true, output, "darwin");
+		expect(out.denied).toBe(false);
 	});
 
 	it("classifies ASRT file-read/file-write annotations as sandbox denials", () => {
@@ -590,11 +601,15 @@ describe("sandbox git excludes", () => {
 		expect(patterns).not.toContain(".git");
 	});
 
-	it("injects a generated core.excludesFile into the inherited command environment", () => {
+	it("does not inject git excludes on non-Linux platforms", () => {
+		expect(withSandboxGitExcludes("git status", process.cwd(), "darwin")).toBe("git status");
+	});
+
+	it("injects a generated core.excludesFile into the inherited command environment on Linux", () => {
 		const oldCount = process.env.GIT_CONFIG_COUNT;
 		process.env.GIT_CONFIG_COUNT = "2";
 		try {
-			const wrapped = withSandboxGitExcludes("git status", process.cwd());
+			const wrapped = withSandboxGitExcludes("git status", process.cwd(), "linux");
 			expect(wrapped).toContain("export GIT_CONFIG_COUNT='3'");
 			expect(wrapped).toContain("export GIT_CONFIG_KEY_2='core.excludesFile'");
 			expect(wrapped).toContain("\ngit status");

@@ -595,14 +595,17 @@ command completion now removes these ghost files promptly.
 
 Follow-up: cleanup alone is insufficient for commands that run `git
 status` / `git add -A` while the placeholders are mounted inside the
-sandbox. pi-auto now prepends sandboxed bash with exported git config
-env vars (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_N=core.excludesFile`,
+Linux sandbox. On Linux only, pi-auto now prepends sandboxed bash with
+exported git config env vars (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_N=core.excludesFile`,
 `GIT_CONFIG_VALUE_N=<generated file>`) so every process in the sandboxed
 shell inherits a generated exclude file. The exclude patterns are derived
 from ASRT's own mandatory-deny list (`DANGEROUS_FILES` +
 `getDangerousDirectories()`), with existing user/global git excludes
 concatenated into the generated file so the override does not drop normal
-ignore behavior.
+ignore behavior. The `.gitmodules` / mandatory-deny `Permission denied`
+heuristic is likewise Linux-only; macOS uses Seatbelt rather than the
+bubblewrap mount-point strategy.
 
 ## Open work
 
