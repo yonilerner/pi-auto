@@ -106,6 +106,20 @@ at the bottom of the relevant section.
       This should be the documented way to apply manual JSON edits
       without toggling a random setting or restarting pi.
 
+- [ ] **Copy inherited arrays when editing project-level list settings.**
+      If we add UI support for project-level list fields (or extend the
+      existing settings UI to cover list fields), adding an item to a
+      previously unset project-level array should start from the
+      effective inherited value rather than writing an array containing
+      only the new item. Example: if user-global
+      `extraSafeCommandPrefixes` or `sandbox.allowedDomains` already
+      has entries, and the project config doesn't set that array yet,
+      the first project-level "add" action should copy the inherited
+      entries and append the new one. This preserves the mental model
+      that project config overrides only fields the project actually set,
+      while still making array edits intuitive despite arrays being
+      replaced rather than concatenated during layered loading.
+
 ## Reviewer architecture
 
 - [ ] **Two-stage classifier.** Anthropic's auto mode
