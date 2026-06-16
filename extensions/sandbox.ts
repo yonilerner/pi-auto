@@ -18,8 +18,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -311,10 +311,15 @@ function getAsrtMandatoryDenyPathPatterns(): string[] {
 
 function ensureSandboxGitExcludesFile(cwd: string): string {
 	const hash = createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 16);
-	const dir = path.join(tmpdir(), "pi-auto", "sandbox-git-excludes");
-	mkdirSync(dir, { recursive: true });
-	const filePath = path.join(dir, `${hash}.gitignore`);
-	writeFileSync(filePath, buildSandboxGitExcludesFileContent(cwd), "utf8");
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-sandbox-git-excludes-"));
+	chmodSync(dir, 0o700);
+	const filePath = path.join(dir, `${hash}-${randomUUID()}.gitignore`);
+	writeFileSync(filePath, buildSandboxGitExcludesFileContent(cwd), {
+		encoding: "utf8",
+		flag: "wx",
+		mode: 0o600,
+	});
+	chmodSync(filePath, 0o600);
 	return filePath;
 }
 

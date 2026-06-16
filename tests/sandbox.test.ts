@@ -18,7 +18,7 @@
  * Integration with the actual sandbox is covered manually + via live tests.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
@@ -591,11 +591,15 @@ describe("filterNoiseFromAnnotation", () => {
 });
 
 describe("sandbox git excludes", () => {
-	function generatedExcludeContentFor(cwd: string): string {
+	function generatedExcludePathFor(cwd: string): string {
 		const wrapped = withSandboxGitExcludes("git status", cwd, "linux");
 		const excludePath = /export GIT_CONFIG_VALUE_\d+='([^']+)'/.exec(wrapped)?.[1];
 		expect(excludePath).toBeTruthy();
-		return readFileSync(excludePath as string, "utf8");
+		return excludePath as string;
+	}
+
+	function generatedExcludeContentFor(cwd: string): string {
+		return readFileSync(generatedExcludePathFor(cwd), "utf8");
 	}
 
 	it("derives git-ignore patterns from ASRT's mandatory deny list", () => {
@@ -634,6 +638,16 @@ describe("sandbox git excludes", () => {
 				process.env.GIT_CONFIG_COUNT = oldCount;
 			}
 		}
+	});
+
+	it("writes excludes to a fresh private temp file for each wrap", () => {
+		const first = generatedExcludePathFor(process.cwd());
+		const second = generatedExcludePathFor(process.cwd());
+		expect(second).not.toBe(first);
+		expect(path.dirname(first)).not.toBe(path.dirname(second));
+		expect(lstatSync(first).isSymbolicLink()).toBe(false);
+		expect(lstatSync(path.dirname(first)).mode & 0o777).toBe(0o700);
+		expect(lstatSync(first).mode & 0o777).toBe(0o600);
 	});
 
 	it("preserves only the default git ignore file, not repo-configured core.excludesFile", () => {
