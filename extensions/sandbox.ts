@@ -299,7 +299,11 @@ export function withSandboxGitExcludes(command: string, cwd: string): string {
 }
 
 export function getAsrtMandatoryDenyGitExcludePatterns(): string[] {
-	return [...DANGEROUS_FILES, ...getDangerousDirectories()].map((p) => p.replace(/^\.\//, ""));
+	return getAsrtMandatoryDenyPathPatterns().filter((p) => !p.startsWith(".git/"));
+}
+
+function getAsrtMandatoryDenyPathPatterns(): string[] {
+	return [...DANGEROUS_FILES, ...getDangerousDirectories(), ".git/hooks", ".git/config"].map((p) => p.replace(/^\.\//, ""));
 }
 
 function ensureSandboxGitExcludesFile(cwd: string): string {
@@ -448,13 +452,16 @@ export function detectSandboxDenial(
 		["connect tunnel failed", "network denied by sandbox (proxy)"],
 		// Node's default fetch / undici error when proxy blocks:
 		["fetch failed", "network denied by sandbox"],
-		// Generic catch-alls (kept last so the more specific markers above win):
+		// Generic catch-all (kept last so the more specific markers above win):
 		["operation not permitted", "filesystem operation denied by sandbox"],
 	];
 	for (const [needle, label] of markers) {
 		if (lower.includes(needle)) {
 			return { denied: true, reason: label };
 		}
+	}
+	if (extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput)) {
+		return { denied: true, reason: "filesystem operation denied by sandbox" };
 	}
 	return { denied: false, reason: "" };
 }
@@ -676,15 +683,17 @@ export function extractDeniedPathFromStderr(combinedOutput: string): string | un
 		if (stripped) return stripped;
 	}
 	// Shape 2: Python's PermissionError / OSError formatting puts the path
-	// AFTER "Operation not permitted":
+	// AFTER the denial phrase:
 	//   `PermissionError: [Errno 1] Operation not permitted: '/tmp/foo'`
 	//   `OSError: [Errno 13] Permission denied: '/tmp/foo'`
-	const pythonShape = /Operation not permitted:\s+['"]?([^'"\n]+?)['"]?(?:\s|$)/i;
+	const pythonShape = /(?:Operation not permitted|Permission denied):\s+['"]?([^'"\n]+?)['"]?(?:\s|$)/i;
 	m = pythonShape.exec(combinedOutput);
 	if (m?.[1]) {
 		const stripped = normalizeDeniedPathCandidate(m[1]);
 		if (stripped) return stripped;
 	}
+	const mandatoryDenyPath = extractAsrtMandatoryDenyPathFromPermissionDenied(combinedOutput);
+	if (mandatoryDenyPath) return mandatoryDenyPath;
 	// Shape 3: parse the ASRT violation store directly. The annotated block
 	// includes lines like:
 	//   `python3.11(12345) deny(1) file-write-create /private/tmp/foo`
@@ -711,6 +720,33 @@ function normalizeDeniedPathCandidate(s: string): string | undefined {
 	if (!stripped) return undefined;
 	if (!looksLikeFilesystemPath(stripped)) return undefined;
 	return stripped;
+}
+
+function extractAsrtMandatoryDenyPathFromPermissionDenied(
+	combinedOutput: string,
+): string | undefined {
+	const lines = combinedOutput.split("\n");
+	const permissionLineIndexes = lines
+		.map((line, index) => ({ line: line.toLowerCase(), index }))
+		.filter(({ line }) =>
+			line.includes("permission denied") ||
+			line.includes("os error 13") ||
+			line.includes("eacces"),
+		)
+		.map(({ index }) => index);
+	if (permissionLineIndexes.length === 0) return undefined;
+
+	const candidates = getAsrtMandatoryDenyPathPatterns().sort((a, b) => b.length - a.length);
+	for (const candidate of candidates) {
+		const needle = candidate.toLowerCase();
+		for (const permissionIndex of permissionLineIndexes) {
+			const start = Math.max(0, permissionIndex - 4);
+			const end = Math.min(lines.length, permissionIndex + 5);
+			const window = lines.slice(start, end).join("\n").toLowerCase();
+			if (window.includes(needle)) return candidate;
+		}
+	}
+	return undefined;
 }
 
 function stripPathQuotes(s: string): string {

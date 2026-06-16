@@ -19,13 +19,15 @@
  */
 
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it } from "vitest";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	_noiseOperationsForTest,
 	_resetNetworkAttemptsForTest,
 	buildRetryReason,
 	buildSandboxRuntimeConfig,
 	detectSandboxDenial,
+	detectSandboxDenialForCommand,
 	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
 	filterNoiseFromAnnotation,
@@ -325,6 +327,48 @@ PermissionError: [Errno 1] Operation not permitted: '/tmp/pi-agent/sandbox-shoul
 			"cat: /etc/passwd: Operation not permitted",
 		].join("\n");
 		expect(extractDeniedPathFromStderr(output)).toBe("/etc/shadow");
+	});
+});
+
+describe("detectSandboxDenialForCommand", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("classifies mandatory-deny Permission denied output as a sandbox denial", () => {
+		const output = [
+			"Error: Could not read '.gitmodules' file",
+			"",
+			"Caused by:",
+			"    Permission denied (os error 13)",
+		].join("\n");
+		const out = detectSandboxDenialForCommand("but status -fv", true, output);
+		expect(out.denied).toBe(true);
+		expect(out.reason).toBe("filesystem operation denied by sandbox");
+		expect(buildRetryReason(out.reason, out.annotatedOutput, [])).toContain(".gitmodules");
+	});
+
+	it("classifies ASRT file-read/file-write annotations as sandbox denials", () => {
+		vi.spyOn(SandboxManager, "annotateStderrWithSandboxFailures").mockReturnValue(
+			[
+				"Could not read '.gitmodules' file",
+				"Caused by:",
+				"    Permission denied (os error 13)",
+				"<sandbox_violations>",
+				"but(123) deny(1) file-read-data /home/me/repo/.gitmodules",
+				"</sandbox_violations>",
+			].join("\n"),
+		);
+
+		const out = detectSandboxDenialForCommand(
+			"but status -fv",
+			true,
+			"Could not read '.gitmodules' file\nCaused by:\n    Permission denied (os error 13)",
+		);
+
+		expect(out.denied).toBe(true);
+		expect(out.reason).toBe("filesystem operation denied by sandbox");
+		expect(out.annotatedOutput).toContain("file-read-data /home/me/repo/.gitmodules");
 	});
 });
 
