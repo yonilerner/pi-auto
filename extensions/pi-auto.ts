@@ -86,7 +86,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 	stripAssistantText: false,
 	stripToolResults: false,
 	sandbox: {
-		// Default escape-only - every bash call runs wrapped, the reviewer is
+		// Default escape-only — every bash call runs wrapped, the reviewer is
 		// only invoked when the sandbox denies. This is the cheapest of the two
 		// "on" modes and gives you the OS-level backstop on a fresh install.
 		// Set to "off" via /pi-auto-settings if you want the prior behavior
@@ -117,7 +117,7 @@ const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {
  * toolCallId. Populated in `tool_call` when we rewrite a command, read in
  * `tool_result` to recover the original command + decide whether to escape.
  *
- * Map is intentionally unbounded across a session - entries are evicted on
+ * Map is intentionally unbounded across a session — entries are evicted on
  * `tool_result`. If a tool_call somehow never gets a tool_result the entry
  * leaks for the session lifetime; the memory footprint per entry is small
  * (a string command + small struct).
@@ -149,13 +149,13 @@ export default function (pi: ExtensionAPI): void {
 
 	// Runtime override: when true, ALL tool calls bypass pi-auto entirely
 	// (no scope check, no reviewer call, no circuit breaker). Set via
-	// /pi-auto-disable, cleared via /pi-auto-enable. In-memory only - a fresh
+	// /pi-auto-disable, cleared via /pi-auto-enable. In-memory only — a fresh
 	// pi launch always starts enabled. The persistent status bar makes the
 	// off state hard to miss.
 	let disabled = false;
 
 	// Sandbox runtime state. Lazily initialized on first bash call when
-	// settings.sandbox.mode != "off" - but validated at session_start so we
+	// settings.sandbox.mode != "off" — but validated at session_start so we
 	// can hard-error early if the host doesn't support the sandbox.
 	const sandboxState: { current: SandboxState } = { current: { kind: "disabled" } };
 	// Last sandbox mode for which we reconciled status indicator + warnings.
@@ -170,8 +170,8 @@ export default function (pi: ExtensionAPI): void {
 	// Track the current turn so we can scope the circuit breaker per turn.
 	let currentTurnId = "boot";
 	// Validate sandbox at session start (hard-error policy from interview). We
-	// don't initialize the runtime here - that happens lazily on first bash
-	// call - but we do the availability + dependency check now so a misconfigured
+	// don't initialize the runtime here — that happens lazily on first bash
+	// call — but we do the availability + dependency check now so a misconfigured
 	// session fails loudly the moment the user launches pi, not on the first
 	// bash command.
 	pi.on("session_start", async (_event, ctx) => {
@@ -219,14 +219,14 @@ export default function (pi: ExtensionAPI): void {
 			await shutdownSandbox(sandboxState);
 			sandboxState.current = { kind: "disabled" };
 		} else {
-			// If switching mode while a runtime exists, reset - ASRT's config is
+			// If switching mode while a runtime exists, reset — ASRT's config is
 			// captured at initialize() time. ensureSandboxReady will re-init lazily
 			// on the next bash call.
 			if (sandboxState.current.kind === "ready" || sandboxState.current.kind === "initializing") {
 				await shutdownSandbox(sandboxState);
 				sandboxState.current = { kind: "disabled" };
 			} else if (sandboxState.current.kind === "broken") {
-				// Give it another shot - the user may have just fixed dependencies
+				// Give it another shot — the user may have just fixed dependencies
 				// via the UI (e.g. flipping mode off then on after installing srt).
 				sandboxState.current = { kind: "disabled" };
 			}
@@ -265,11 +265,11 @@ export default function (pi: ExtensionAPI): void {
 					// Critical posture: the sandbox is off and the user (or a default
 					// flip) put it there. Always surface this regardless of noticeLevel.
 					ctx.ui.notify(
-						"pi-auto sandbox: OFF - no OS-level backstop on bash calls. Re-enable via /pi-auto-settings.",
+						"pi-auto sandbox: OFF — no OS-level backstop on bash calls. Re-enable via /pi-auto-settings.",
 						"warning",
 					);
 				} else if (transition && previous === "off" && shouldNotify(settings.noticeLevel, "verbose")) {
-					ctx.ui.notify(`pi-auto sandbox: ${desired} - bash calls wrapped`, "info");
+					ctx.ui.notify(`pi-auto sandbox: ${desired} — bash calls wrapped`, "info");
 				} else if (transition && shouldNotify(settings.noticeLevel, "verbose")) {
 					ctx.ui.notify(`pi-auto sandbox: mode changed → ${desired}`, "info");
 				}
@@ -303,11 +303,11 @@ export default function (pi: ExtensionAPI): void {
 		breaker.clearTurn(currentTurnId);
 		if (!settings.enableDigest) return;
 		// Fire-and-forget: update the rolling digest after the turn. We do NOT
-		// await this - a long summarizer call must not block the next user turn.
+		// await this — a long summarizer call must not block the next user turn.
 		// If the user kicks off a new turn before this finishes, the next
 		// reviewer call sees the stale digest, which is fine.
 		void updateDigestForTurn(ctx, settings, pi).catch(() => {
-			/* swallow - best effort */
+			/* swallow — best effort */
 		});
 	});
 
@@ -325,7 +325,7 @@ export default function (pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		setStatus(ctx, `reviewing ${event.toolName}...`);
+		setStatus(ctx, `reviewing ${event.toolName}…`);
 		const result = await reviewAction(scope.action, ctx, settings);
 		clearStatus(ctx);
 
@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI): void {
 			},
 		};
 
-		setStatus(ctx, "reviewing sandbox escape...");
+		setStatus(ctx, "reviewing sandbox escape…");
 		const reviewResult = await reviewAction(escapeAction, ctx, settings);
 		clearStatus(ctx);
 
@@ -418,7 +418,7 @@ export default function (pi: ExtensionAPI): void {
 			};
 		}
 
-		// Escape allowed - re-run the original command outside the sandbox.
+		// Escape allowed — re-run the original command outside the sandbox.
 		recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ true);
 		if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
 			ctx.ui.notify(
@@ -426,7 +426,7 @@ export default function (pi: ExtensionAPI): void {
 				"info",
 			);
 		}
-		setStatus(ctx, "re-running outside sandbox...");
+		setStatus(ctx, "re-running outside sandbox…");
 		try {
 			const bare = await runBareCommand(wrap.originalCommand, ctx.cwd, ctx.signal);
 			clearStatus(ctx);
@@ -475,7 +475,7 @@ export default function (pi: ExtensionAPI): void {
 		// a user-asserted `extraSafeCommandPrefixes` entry (or a built-in
 		// known-safe match) means "I'm certain this is fine", which has to beat
 		// every other gate. Without this hoist, `extraSafeCommandPrefixes` would
-		// be a no-op for bash whenever `sandbox.mode != "off"` - review-only
+		// be a no-op for bash whenever `sandbox.mode != "off"` — review-only
 		// prefixes would preempt it in `escape-only`, and the sandbox wrap would
 		// silently apply on top of it in `review-then-escape`.
 		const scope = decideScope(event, ctx.cwd, settings);
@@ -492,7 +492,7 @@ export default function (pi: ExtensionAPI): void {
 		);
 		if (reviewOnlyDecision.kind === "match") {
 			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
-			setStatus(ctx, "reviewing review-only bash...");
+			setStatus(ctx, "reviewing review-only bash…");
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
 			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
@@ -506,7 +506,7 @@ export default function (pi: ExtensionAPI): void {
 		// fast path is already covered by the hoisted `decideScope` above, so
 		// here we know `scope.review === true`.
 		if (settings.sandbox.mode === "review-then-escape") {
-			setStatus(ctx, `reviewing ${event.toolName}...`);
+			setStatus(ctx, `reviewing ${event.toolName}…`);
 			const result = await reviewAction(scope.action, ctx, settings);
 			clearStatus(ctx);
 			const gating = await handleReviewResult(
@@ -541,7 +541,7 @@ export default function (pi: ExtensionAPI): void {
 			// Mutate the event input in place so pi runs the wrapped command. Per
 			// the pi extension docs (tool_call) this is the supported path for
 			// argument patching. The user will see the wrapped form in the bash
-			// tool display - there isn't currently a pi API to display X while
+			// tool display — there isn't currently a pi API to display X while
 			// executing Y. annotateBashDisplay is reserved for a future hook.
 			(event.input as { command?: unknown }).command = wrapped;
 			wrappedBashByToolCallId.set(event.toolCallId, {
@@ -572,7 +572,7 @@ export default function (pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const digestState = getLatestDigest(ctx.sessionManager);
 			const lines = [
-				`pi-auto: ${disabled ? "DISABLED - all tool calls run without review" : "enabled"}`,
+				`pi-auto: ${disabled ? "DISABLED — all tool calls run without review" : "enabled"}`,
 				``,
 				`settings:`,
 				`  reviewer:                  ${settings.reviewerProvider}/${settings.reviewerModel}`,
@@ -630,7 +630,7 @@ export default function (pi: ExtensionAPI): void {
 			disabled = true;
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					"pi-auto: DISABLED - tool calls will run without review until /pi-auto-enable",
+					"pi-auto: DISABLED — tool calls will run without review until /pi-auto-enable",
 					"warning",
 				);
 				setDisabledStatus(ctx, true);
@@ -667,7 +667,7 @@ export default function (pi: ExtensionAPI): void {
 				`  deny write:      ${formatStringList(s.denyWrite, "(none)")}`,
 				`  allowed dangerous files: ${formatStringList(s.allowedDangerousFiles, "(none)")}`,
 				`ui:`,
-				`  status indicator: ${s.showStatusIndicator}`, 
+				`  status indicator: ${s.showStatusIndicator}`,
 				`  annotate bash:    ${s.annotateBashDisplay}`,
 				`  notice level:     ${settings.noticeLevel} (see /pi-auto-settings)`,
 			];
@@ -719,7 +719,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 			disabled = false;
 			if (ctx.hasUI) {
-				ctx.ui.notify("pi-auto: enabled - review is active", "info");
+				ctx.ui.notify("pi-auto: enabled — review is active", "info");
 				setDisabledStatus(ctx, false);
 			}
 		},
@@ -865,7 +865,7 @@ function clearStatus(ctx: ExtensionContext): void {
 
 /**
  * Persistent status-bar indicator shown for as long as pi-auto is disabled.
- * Uses a different status key than `setStatus` (the transient "reviewing..."
+ * Uses a different status key than `setStatus` (the transient "reviewing…"
  * indicator) so the two don't overwrite each other.
  *
  * The text is wrapped in ANSI bright-red so the off state visibly stands out
@@ -875,7 +875,7 @@ function clearStatus(ctx: ExtensionContext): void {
  */
 /**
  * Sandbox lock indicator. Lives in its own status-bar key so it doesn't
- * collide with the disabled-state indicator or the transient "reviewing..."
+ * collide with the disabled-state indicator or the transient "reviewing…"
  * text. ANSI green padlock means sandbox is engaged this session.
  */
 function setSandboxStatus(
@@ -1012,7 +1012,7 @@ function couldMatchCommandPrefix(argvPrefix: readonly string[], prefix: readonly
 }
 
 function truncate(s: string, n: number): string {
-	return s.length <= n ? s : `${s.slice(0, n)}...`;
+	return s.length <= n ? s : `${s.slice(0, n)}…`;
 }
 
 function setDisabledStatus(
@@ -1049,7 +1049,7 @@ const NOTICE_LEVEL_ORDER = ["silent", "denials", "normal", "verbose"] as const;
  *
  * Tiers, lowest → highest:
  *   - "critical":  always shown. Sandbox unavailable, settings load errors,
- *                 sandbox-OFF startup warning - the user needs to know.
+ *                 sandbox-OFF startup warning — the user needs to know.
  *   - "denials":   denied / blocked actions. Reviewer deny, sandbox denial,
  *                 escape-reviewer deny or unavailable, circuit-breaker trip.
  *   - "normal":    successful actions worth confirming. Reviewer allow,
@@ -1077,7 +1077,7 @@ function assignSettings(target: PiAutoSettings, source: PiAutoSettings): void {
 /**
  * Pre-session_start layer map. Everything points at "default" until
  * loadSettings runs. Allows the UI to be opened before session_start would
- * complete (defensive - shouldn't normally happen).
+ * complete (defensive — shouldn't normally happen).
  */
 function buildInitialLayerMap(): SettingsLayerMap {
 	const map = {} as SettingsLayerMap;
