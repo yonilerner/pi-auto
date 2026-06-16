@@ -27,6 +27,7 @@ import { reviewAction, type ReviewResult } from "./reviewer.ts";
 import {
 	buildRetryReason,
 	checkSandboxAvailability,
+	cleanupAfterSandboxCommand,
 	detectSandboxDenialForCommand,
 	ensureSandboxReady,
 	getNetworkAttemptsSince,
@@ -334,6 +335,7 @@ export default function (pi: ExtensionAPI): void {
 		const wrap = wrappedBashByToolCallId.get(event.toolCallId);
 		if (!wrap) return undefined;
 		wrappedBashByToolCallId.delete(event.toolCallId);
+		cleanupAfterSandboxCommand();
 
 		const combinedOutput = extractTextContent(event);
 		const denial = detectSandboxDenialForCommand(
@@ -505,7 +507,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		try {
-			const wrapped = await wrapBashCommand(originalCommand);
+			const wrapped = await wrapBashCommand(originalCommand, ctx.cwd);
 			// Mutate the event input in place so pi runs the wrapped command. Per
 			// the pi extension docs (tool_call) this is the supported path for
 			// argument patching. The user will see the wrapped form in the bash
