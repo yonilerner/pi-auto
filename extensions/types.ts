@@ -81,8 +81,8 @@ export interface SandboxSettings {
 	 */
 	denyRead: string[];
 	/**
-	 * Filesystem: paths the sandbox may write. Empty array = no writes
-	 * permitted. Default is the current working directory + /tmp.
+	 * Filesystem: paths the sandbox may write. Default includes the current
+	 * workspace (`.`); removing it removes workspace write access.
 	 */
 	allowWrite: string[];
 	/**

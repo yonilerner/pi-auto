@@ -94,8 +94,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		deniedDomains: [],
 		allowRead: [],
 		denyRead: [],
-		// Empty means "use cwd + /tmp" — wired in extensions/sandbox.ts.
-		allowWrite: [],
+		allowWrite: ["."],
 		denyWrite: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
@@ -624,7 +623,7 @@ export default function (pi: ExtensionAPI): void {
 				`filesystem:`,
 				`  allow read:      ${s.allowRead.length ? s.allowRead.join(", ") : "(runtime defaults)"}`,
 				`  deny read:       ${s.denyRead.length ? s.denyRead.join(", ") : "(none)"}`,
-				`  allow write:     ${s.allowWrite.length ? s.allowWrite.join(", ") : "(cwd + /tmp — default)"}`,
+				`  allow write:     ${s.allowWrite.length ? s.allowWrite.join(", ") : "(none)"}`,
 				`  deny write:      ${s.denyWrite.length ? s.denyWrite.join(", ") : "(none)"}`,
 				`ui:`,
 				`  status indicator: ${s.showStatusIndicator}`,

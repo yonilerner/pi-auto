@@ -154,6 +154,12 @@ Which tool calls get reviewed at all, and what policy text the reviewer sees.
 | `extraSafeCommandPrefixes`    | `[]`                 | Argv prefixes that bypass review entirely for `bash`. `[["npm", "test"]]` matches `npm test`, `npm test --grep foo`, etc., including inside compound bash chains. See the [Bash known-safe fast path](#bash-known-safe-fast-path) section. |
 | `customPolicy`                | `""`                 | Free-form text appended to the base reviewer policy. Use this to inject project-specific rules ("never push to main without `--dry-run`", "always require explicit per-turn auth for cloud writes", etc.). |
 
+### Sandbox
+
+| Setting | Default | What it does |
+| ------- | ------- | ------------ |
+| `sandbox.allowWrite` | `["."]` | Filesystem write roots for sandboxed commands. The default allows the current workspace (`.`); add entries here for extra writable roots. If you override this and remove `.`, workspace writes are no longer allowed. `/tmp` is not writable by default. |
+
 ### Transcript building
 
 How much conversation history the reviewer sees, and what shape it's in. These directly affect both review quality and prompt cost.

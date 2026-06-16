@@ -143,9 +143,8 @@ export function checkSandboxAvailability(settings: SandboxSettings): SandboxAvai
 }
 
 /**
- * Build the SandboxRuntimeConfig that we hand to ASRT. We default to a
- * workspace-only filesystem write policy (cwd + /tmp) and a closed-by-default
- * network policy, then layer the user-provided allow/deny entries on top.
+ * Build the SandboxRuntimeConfig that we hand to ASRT. Filesystem write roots
+ * are configured explicitly in settings; the default settings include `.`.
  *
  * Read access is left at the runtime's defaults (allowed everywhere, modulo
  * the runtime's built-in sensitive-path denies) and we only add explicit
@@ -153,10 +152,8 @@ export function checkSandboxAvailability(settings: SandboxSettings): SandboxAvai
  */
 export function buildSandboxRuntimeConfig(
 	settings: SandboxSettings,
-	cwd: string,
+	_cwd: string,
 ): SandboxRuntimeConfig {
-	const allowWrite =
-		settings.allowWrite.length > 0 ? settings.allowWrite : [cwd, "/tmp"];
 	return {
 		network: {
 			allowedDomains: settings.allowedDomains,
@@ -165,7 +162,7 @@ export function buildSandboxRuntimeConfig(
 		filesystem: {
 			allowRead: settings.allowRead,
 			denyRead: settings.denyRead,
-			allowWrite,
+			allowWrite: settings.allowWrite,
 			denyWrite: settings.denyWrite,
 		},
 	} as SandboxRuntimeConfig;
