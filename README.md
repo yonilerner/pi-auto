@@ -129,7 +129,7 @@ Interactive form, opened with the slash command. The flow:
 
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `reviewOnlyCommandPrefixes`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -203,6 +203,22 @@ How allows are surfaced and when a runaway loop trips the circuit breaker.
 Review failures (timeout, no API key, unparseable response) fall back to a user prompt in interactive mode and fail closed (block) in non-interactive modes (`-p`, JSON).
 
 The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it's been folded into `noticeLevel` (sandbox-related notifications obey the same tiered scheme as the reviewer's). The old `announceAllows` boolean was similarly replaced.
+
+### Sandbox command-prefix escapes
+
+`sandbox.reviewOnlyCommandPrefixes` is a list of argv prefixes for bash commands that should skip the initial sandbox attempt and run only after reviewer approval. Use this for tools that are incompatible with the sandbox in misleading ways (for example, CLIs that require an OS keyring or desktop session socket). Example:
+
+```json
+{
+  "sandbox": {
+    "reviewOnlyCommandPrefixes": [["gh"]]
+  }
+}
+```
+
+The matcher only routes plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`. Command names are matched exactly: `[["gh"]]` matches only bare `gh`, not `./gh` or `/tmp/gh`; configure a pathful command explicitly, e.g. `[["/usr/bin/gh"]]`.
+
+If a command appears to invoke a review-only prefix but uses unsupported shell syntax, pi-auto blocks it with a targeted repair message instead of falling back to sandbox execution. For example, `gh pr create --body $'...\\n...'`, `GH_DEBUG=api gh auth status`, `gh auth status > out.txt`, and `gh auth status && rm -rf /tmp/x` are blocked before execution; rewrite them as plain argv-only commands (for multiline text, use a temp file plus `--body-file`).
 
 ## Commands
 

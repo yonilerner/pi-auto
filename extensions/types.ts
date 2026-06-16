@@ -91,6 +91,12 @@ export interface SandboxSettings {
 	 */
 	denyWrite: string[];
 	/**
+	 * Bash argv prefixes that should bypass the initial sandbox attempt and run
+	 * only after reviewer approval. Use for tools that are incompatible with the
+	 * sandbox in misleading ways (for example, tools that require OS keyrings).
+	 */
+	reviewOnlyCommandPrefixes: string[][];
+	/**
 	 * Status-bar lock indicator when mode != off.
 	 */
 	showStatusIndicator: boolean;

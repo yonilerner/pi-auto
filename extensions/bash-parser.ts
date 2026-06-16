@@ -137,7 +137,61 @@ export function parseShellLcPlainCommands(command: readonly string[]): string[][
 	return tryParseWordOnlyCommandsSequence(tree, extracted.script);
 }
 
+/**
+ * Best-effort extraction of static argv prefixes from every command node in a
+ * shell script, even when the script uses syntax rejected by the strict
+ * word-only parser. This is intentionally NOT an allow/safety classifier; it
+ * exists so routing rules can detect "this looks like a configured command,
+ * but the syntax is unsupported for that route" and fail with a targeted
+ * repair message instead of silently taking another execution path.
+ */
+export function parseLooseCommandArgvPrefixes(script: string): string[][] {
+	const tree = tryParseShell(script);
+	if (!tree) return [];
+	const commandNodes: Node[] = [];
+	const stack: Node[] = [tree.rootNode];
+	while (stack.length > 0) {
+		// biome-ignore lint/style/noNonNullAssertion: length-checked above
+		const node = stack.pop()!;
+		if (node.isNamed && node.type === "command") commandNodes.push(node);
+		for (const child of node.children) stack.push(child);
+	}
+	commandNodes.sort((a, b) => a.startIndex - b.startIndex);
+	return commandNodes.map((node) => parseLooseCommandArgvPrefix(node)).filter((argv) => argv.length > 0);
+}
+
 /** Per-command argv extraction. Mirrors `parse_plain_command_from_node`. */
+function parseLooseCommandArgvPrefix(cmd: Node): string[] {
+	if (cmd.type !== "command") return [];
+	const argv: string[] = [];
+	let sawCommandName = false;
+	for (const child of cmd.namedChildren) {
+		if (!sawCommandName) {
+			if (child.type !== "command_name") continue;
+			const wordNode = child.namedChild(0);
+			if (!wordNode || wordNode.type !== "word") return [];
+			argv.push(wordNode.text);
+			sawCommandName = true;
+			continue;
+		}
+		// Capture only statically visible argv words after the command name. Stop
+		// at the first dynamic/unsupported node; callers only need a prefix.
+		switch (child.type) {
+			case "word":
+			case "number":
+				argv.push(child.text);
+				break;
+			case "string":
+			case "raw_string":
+				argv.push(stripShellQuotes(child.text));
+				break;
+			default:
+				return argv;
+		}
+	}
+	return argv;
+}
+
 function parsePlainCommandFromNode(cmd: Node, src: string): string[] | null {
 	if (cmd.type !== "command") return null;
 	const words: string[] = [];
@@ -217,4 +271,11 @@ function parseRawString(node: Node): string | null {
 	const raw = node.text;
 	if (raw.length < 2 || !raw.startsWith("'") || !raw.endsWith("'")) return null;
 	return raw.slice(1, -1);
+}
+
+function stripShellQuotes(raw: string): string {
+	if (raw.length >= 2 && ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"')))) {
+		return raw.slice(1, -1);
+	}
+	return raw;
 }

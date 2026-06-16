@@ -21,6 +21,7 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { parseLooseCommandArgvPrefixes, parseShellLcPlainCommands } from "./bash-parser.ts";
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
@@ -97,6 +98,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		denyRead: [],
 		allowWrite: ["."],
 		denyWrite: [],
+		reviewOnlyCommandPrefixes: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
@@ -466,6 +468,26 @@ export default function (pi: ExtensionAPI): void {
 		const originalCommand = (event.input as { command?: unknown }).command;
 		if (typeof originalCommand !== "string" || !originalCommand.trim()) {
 			return undefined;
+		}
+
+		// Some tools are incompatible with the sandbox in ways that look like
+		// ordinary application errors (for example, `gh` cannot always read an OS
+		// keyring from ASRT's Linux sandbox). For configured prefixes, skip the
+		// first sandbox attempt: review the full command, then run it bare only if
+		// the reviewer allows.
+		const reviewOnlyDecision = decideSandboxReviewOnlyPrefix(
+			originalCommand,
+			settings.sandbox.reviewOnlyCommandPrefixes,
+		);
+		if (reviewOnlyDecision.kind === "match") {
+			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
+			setStatus(ctx, "reviewing review-only bash…");
+			const result = await reviewAction(action, ctx, settings);
+			clearStatus(ctx);
+			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+		}
+		if (reviewOnlyDecision.kind === "unsupported") {
+			return { block: true, reason: reviewOnlyDecision.reason };
 		}
 
 		// Pre-review step for review-then-escape mode. Mirrors the no-sandbox
@@ -876,6 +898,100 @@ function extractTextContent(event: ToolResultEvent): string {
 		if (c.type === "text") out += c.text;
 	}
 	return out;
+}
+
+function bashReviewAction(command: string, toolCallId: string, cwd: string): ReviewableAction {
+	return {
+		toolName: "bash",
+		toolCallId,
+		label: `bash: ${truncate(command, 200)}`,
+		payload: {
+			tool: "bash",
+			command,
+			cwd,
+			reviewOnlyByPrefix: true,
+		},
+	};
+}
+
+export type SandboxReviewOnlyPrefixDecision =
+	| { kind: "match" }
+	| { kind: "unsupported"; reason: string }
+	| { kind: "no-match" };
+
+export function matchesSandboxReviewOnlyPrefix(
+	command: string,
+	prefixes: readonly (readonly string[])[],
+): boolean {
+	return decideSandboxReviewOnlyPrefix(command, prefixes).kind === "match";
+}
+
+export function decideSandboxReviewOnlyPrefix(
+	command: string,
+	prefixes: readonly (readonly string[])[],
+): SandboxReviewOnlyPrefixDecision {
+	if (prefixes.length === 0) return { kind: "no-match" };
+	const plainCommands = parseShellLcPlainCommands(["bash", "-lc", command]);
+	if (plainCommands && plainCommands.length > 0) {
+		const matched = plainCommands.filter((argv) => matchesAnyCommandPrefix(argv, prefixes));
+		if (matched.length === plainCommands.length) return { kind: "match" };
+		if (matched.length > 0) return { kind: "unsupported", reason: buildReviewOnlyUnsupportedReason(prefixes, command, "not every command in the script matches a review-only prefix") };
+		return { kind: "no-match" };
+	}
+
+	const loosePrefixes = parseLooseCommandArgvPrefixes(command);
+	if (loosePrefixes.some((argv) => couldMatchAnyCommandPrefix(argv, prefixes))) {
+		return { kind: "unsupported", reason: buildReviewOnlyUnsupportedReason(prefixes, command, "the command uses shell syntax that review-only routing does not support") };
+	}
+	return { kind: "no-match" };
+}
+
+function buildReviewOnlyUnsupportedReason(
+	prefixes: readonly (readonly string[])[],
+	command: string,
+	detail: string,
+): string {
+	return [
+		"pi-auto blocked this bash command before sandboxing because it appears to use a configured sandbox.reviewOnlyCommandPrefixes entry, but cannot be routed safely.",
+		`Reason: ${detail}.`,
+		`Configured prefixes: ${prefixes.map((p) => p.join(" ")).join(", ")}.`,
+		`Command: ${truncate(command, 500)}`,
+		"Rewrite it as plain argv-only command(s) where every command starts with a review-only prefix. For multiline text, prefer a temporary file plus --body-file over shell quoting, substitution, or redirection.",
+	].join("\n");
+}
+
+function matchesAnyCommandPrefix(
+	argv: readonly string[],
+	prefixes: readonly (readonly string[])[],
+): boolean {
+	return prefixes.some((prefix) => matchesCommandPrefix(argv, prefix));
+}
+
+function matchesCommandPrefix(argv: readonly string[], prefix: readonly string[]): boolean {
+	// Do not basename argv[0]: [["gh"]] must not match ./gh or /tmp/gh.
+	// Pathful commands must be configured and matched exactly.
+	if (prefix.length === 0 || argv.length < prefix.length) return false;
+	for (let i = 0; i < prefix.length; i++) {
+		if ((argv[i] ?? "") !== prefix[i]) return false;
+	}
+	return true;
+}
+
+function couldMatchAnyCommandPrefix(
+	argvPrefix: readonly string[],
+	prefixes: readonly (readonly string[])[],
+): boolean {
+	return prefixes.some((prefix) => couldMatchCommandPrefix(argvPrefix, prefix));
+}
+
+function couldMatchCommandPrefix(argvPrefix: readonly string[], prefix: readonly string[]): boolean {
+	// Keep unsupported-syntax detection aligned with exact command matching.
+	if (prefix.length === 0 || argvPrefix.length === 0) return false;
+	const n = Math.min(argvPrefix.length, prefix.length);
+	for (let i = 0; i < n; i++) {
+		if ((argvPrefix[i] ?? "") !== prefix[i]) return false;
+	}
+	return true;
 }
 
 function truncate(s: string, n: number): string {
