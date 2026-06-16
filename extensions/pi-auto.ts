@@ -21,6 +21,7 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { parseShellLcPlainCommands } from "./bash-parser.ts";
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
@@ -97,6 +98,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		denyRead: [],
 		allowWrite: ["."],
 		denyWrite: [],
+		unsandboxedCommandPrefixes: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
@@ -466,6 +468,19 @@ export default function (pi: ExtensionAPI): void {
 		const originalCommand = (event.input as { command?: unknown }).command;
 		if (typeof originalCommand !== "string" || !originalCommand.trim()) {
 			return undefined;
+		}
+
+		// Some tools are incompatible with the sandbox in ways that look like
+		// ordinary application errors (for example, `gh` cannot always read an OS
+		// keyring from ASRT's Linux sandbox). For configured prefixes, skip the
+		// first sandbox attempt: review the full command, then run it bare only if
+		// the reviewer allows.
+		if (matchesSandboxUnsandboxedPrefix(originalCommand, settings.sandbox.unsandboxedCommandPrefixes)) {
+			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
+			setStatus(ctx, "reviewing unsandboxed bash…");
+			const result = await reviewAction(action, ctx, settings);
+			clearStatus(ctx);
+			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
 		}
 
 		// Pre-review step for review-then-escape mode. Mirrors the no-sandbox
@@ -876,6 +891,50 @@ function extractTextContent(event: ToolResultEvent): string {
 		if (c.type === "text") out += c.text;
 	}
 	return out;
+}
+
+function bashReviewAction(command: string, toolCallId: string, cwd: string): ReviewableAction {
+	return {
+		toolName: "bash",
+		toolCallId,
+		label: `bash: ${truncate(command, 200)}`,
+		payload: {
+			tool: "bash",
+			command,
+			cwd,
+			unsandboxedByPrefix: true,
+		},
+	};
+}
+
+export function matchesSandboxUnsandboxedPrefix(
+	command: string,
+	prefixes: readonly (readonly string[])[],
+): boolean {
+	if (prefixes.length === 0) return false;
+	const plainCommands = parseShellLcPlainCommands(["bash", "-lc", command]);
+	if (!plainCommands || plainCommands.length === 0) return false;
+	return plainCommands.every((argv) => matchesAnyCommandPrefix(argv, prefixes));
+}
+
+function matchesAnyCommandPrefix(
+	argv: readonly string[],
+	prefixes: readonly (readonly string[])[],
+): boolean {
+	return prefixes.some((prefix) => matchesCommandPrefix(argv, prefix));
+}
+
+function matchesCommandPrefix(argv: readonly string[], prefix: readonly string[]): boolean {
+	if (prefix.length === 0 || argv.length < prefix.length) return false;
+	for (let i = 0; i < prefix.length; i++) {
+		const actual = i === 0 ? basename(argv[i] ?? "") : argv[i];
+		if (actual !== prefix[i]) return false;
+	}
+	return true;
+}
+
+function basename(s: string): string {
+	return s.split(/[\\/]/).pop() || s;
 }
 
 function truncate(s: string, n: number): string {

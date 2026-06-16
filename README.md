@@ -129,7 +129,7 @@ Interactive form, opened with the slash command. The flow:
 
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `unsandboxedCommandPrefixes`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -203,6 +203,20 @@ How allows are surfaced and when a runaway loop trips the circuit breaker.
 Review failures (timeout, no API key, unparseable response) fall back to a user prompt in interactive mode and fail closed (block) in non-interactive modes (`-p`, JSON).
 
 The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it's been folded into `noticeLevel` (sandbox-related notifications obey the same tiered scheme as the reviewer's). The old `announceAllows` boolean was similarly replaced.
+
+### Sandbox command-prefix escapes
+
+`sandbox.unsandboxedCommandPrefixes` is a list of argv prefixes for bash commands that should skip the initial sandbox attempt and run only after reviewer approval. Use this for tools that are incompatible with the sandbox in misleading ways (for example, CLIs that require an OS keyring or desktop session socket). Example:
+
+```json
+{
+  "sandbox": {
+    "unsandboxedCommandPrefixes": [["gh"]]
+  }
+}
+```
+
+The matcher only accepts plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`, while `gh auth status && rm -rf /tmp/x` does not.
 
 ## Commands
 
