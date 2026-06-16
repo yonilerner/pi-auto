@@ -95,7 +95,7 @@ export interface SandboxSettings {
 	 * only after reviewer approval. Use for tools that are incompatible with the
 	 * sandbox in misleading ways (for example, tools that require OS keyrings).
 	 */
-	unsandboxedCommandPrefixes: string[][];
+	reviewOnlyCommandPrefixes: string[][];
 	/**
 	 * Status-bar lock indicator when mode != off.
 	 */

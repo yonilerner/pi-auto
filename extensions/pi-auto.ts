@@ -99,7 +99,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		// Empty means "use cwd + /tmp" — wired in extensions/sandbox.ts.
 		allowWrite: [],
 		denyWrite: [],
-		unsandboxedCommandPrefixes: [],
+		reviewOnlyCommandPrefixes: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
@@ -476,9 +476,9 @@ export default function (pi: ExtensionAPI): void {
 		// keyring from ASRT's Linux sandbox). For configured prefixes, skip the
 		// first sandbox attempt: review the full command, then run it bare only if
 		// the reviewer allows.
-		if (matchesSandboxUnsandboxedPrefix(originalCommand, settings.sandbox.unsandboxedCommandPrefixes)) {
+		if (matchesSandboxReviewOnlyPrefix(originalCommand, settings.sandbox.reviewOnlyCommandPrefixes)) {
 			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
-			setStatus(ctx, "reviewing unsandboxed bash…");
+			setStatus(ctx, "reviewing review-only bash…");
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
 			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
@@ -903,12 +903,12 @@ function bashReviewAction(command: string, toolCallId: string, cwd: string): Rev
 			tool: "bash",
 			command,
 			cwd,
-			unsandboxedByPrefix: true,
+			reviewOnlyByPrefix: true,
 		},
 	};
 }
 
-export function matchesSandboxUnsandboxedPrefix(
+export function matchesSandboxReviewOnlyPrefix(
 	command: string,
 	prefixes: readonly (readonly string[])[],
 ): boolean {

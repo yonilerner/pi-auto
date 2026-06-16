@@ -129,7 +129,7 @@ Interactive form, opened with the slash command. The flow:
 
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `unsandboxedCommandPrefixes`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `reviewOnlyCommandPrefixes`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -200,12 +200,12 @@ The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it
 
 ### Sandbox command-prefix escapes
 
-`sandbox.unsandboxedCommandPrefixes` is a list of argv prefixes for bash commands that should skip the initial sandbox attempt and run only after reviewer approval. Use this for tools that are incompatible with the sandbox in misleading ways (for example, CLIs that require an OS keyring or desktop session socket). Example:
+`sandbox.reviewOnlyCommandPrefixes` is a list of argv prefixes for bash commands that should skip the initial sandbox attempt and run only after reviewer approval. Use this for tools that are incompatible with the sandbox in misleading ways (for example, CLIs that require an OS keyring or desktop session socket). Example:
 
 ```json
 {
   "sandbox": {
-    "unsandboxedCommandPrefixes": [["gh"]]
+    "reviewOnlyCommandPrefixes": [["gh"]]
   }
 }
 ```
