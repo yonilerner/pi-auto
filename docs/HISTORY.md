@@ -622,7 +622,9 @@ example `gh`, whose token may live in an OS keyring reached through a
 Unix socket that the Linux sandbox blocks, surfacing as a normal GitHub
 auth failure rather than a sandbox denial. Matching is deliberately
 narrow: plain word-only scripts whose commands all match are routed to
-the reviewer; commands that appear to invoke a configured prefix but use
+the reviewer, and command names match exactly (`[["gh"]]` does not match
+`./gh` or `/tmp/gh`; pathful commands must be configured as pathful
+prefixes). Commands that appear to invoke a configured prefix but use
 unsupported shell syntax are blocked with a targeted repair message
 instead of silently falling back to sandbox execution. This preserves the
 "review-only means do not sandbox" contract without treating complex

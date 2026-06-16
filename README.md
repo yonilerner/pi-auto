@@ -216,7 +216,7 @@ The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it
 }
 ```
 
-The matcher only routes plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`.
+The matcher only routes plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`. Command names are matched exactly: `[["gh"]]` matches only bare `gh`, not `./gh` or `/tmp/gh`; configure a pathful command explicitly, e.g. `[["/usr/bin/gh"]]`.
 
 If a command appears to invoke a review-only prefix but uses unsupported shell syntax, pi-auto blocks it with a targeted repair message instead of falling back to sandbox execution. For example, `gh pr create --body $'...\\n...'`, `GH_DEBUG=api gh auth status`, `gh auth status > out.txt`, and `gh auth status && rm -rf /tmp/x` are blocked before execution; rewrite them as plain argv-only commands (for multiline text, use a temp file plus `--body-file`).
 

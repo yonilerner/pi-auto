@@ -968,10 +968,11 @@ function matchesAnyCommandPrefix(
 }
 
 function matchesCommandPrefix(argv: readonly string[], prefix: readonly string[]): boolean {
+	// Do not basename argv[0]: [["gh"]] must not match ./gh or /tmp/gh.
+	// Pathful commands must be configured and matched exactly.
 	if (prefix.length === 0 || argv.length < prefix.length) return false;
 	for (let i = 0; i < prefix.length; i++) {
-		const actual = i === 0 ? basename(argv[i] ?? "") : argv[i];
-		if (actual !== prefix[i]) return false;
+		if ((argv[i] ?? "") !== prefix[i]) return false;
 	}
 	return true;
 }
@@ -984,17 +985,13 @@ function couldMatchAnyCommandPrefix(
 }
 
 function couldMatchCommandPrefix(argvPrefix: readonly string[], prefix: readonly string[]): boolean {
+	// Keep unsupported-syntax detection aligned with exact command matching.
 	if (prefix.length === 0 || argvPrefix.length === 0) return false;
 	const n = Math.min(argvPrefix.length, prefix.length);
 	for (let i = 0; i < n; i++) {
-		const actual = i === 0 ? basename(argvPrefix[i] ?? "") : argvPrefix[i];
-		if (actual !== prefix[i]) return false;
+		if ((argvPrefix[i] ?? "") !== prefix[i]) return false;
 	}
 	return true;
-}
-
-function basename(s: string): string {
-	return s.split(/[\\/]/).pop() || s;
 }
 
 function truncate(s: string, n: number): string {

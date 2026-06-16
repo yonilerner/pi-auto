@@ -91,14 +91,22 @@ function assessment(opts: Partial<ReviewerAssessment> & Pick<ReviewerAssessment,
 describe("decideSandboxReviewOnlyPrefix", () => {
 	it("matches plain commands whose argv starts with a configured prefix", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh auth status", [["gh"]]).kind).toBe("match");
-		expect(decideSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["gh", "pr"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["/usr/bin/gh", "pr"]]).kind).toBe("match");
 		expect(decideSandboxReviewOnlyPrefix("gh pr create", [["gh", "auth"]]).kind).toBe("no-match");
 		expect(matchesSandboxReviewOnlyPrefix("gh auth status", [["gh"]])).toBe(true);
 	});
 
+	it("requires exact argv[0] matching instead of basename matching", () => {
+		expect(decideSandboxReviewOnlyPrefix("./gh auth status", [["gh"]]).kind).toBe("no-match");
+		expect(decideSandboxReviewOnlyPrefix("/tmp/gh auth status", [["gh"]]).kind).toBe("no-match");
+		expect(decideSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["gh", "pr"]]).kind).toBe("no-match");
+		expect(decideSandboxReviewOnlyPrefix("gh auth status", [["/usr/bin/gh"]]).kind).toBe("no-match");
+	});
+
 	it("matches when every command in a simple compound script matches", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh auth status && gh pr list", [["gh"]]).kind).toBe("match");
-		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("/usr/bin/gh auth status; /usr/bin/gh pr list", [["/usr/bin/gh"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("unsupported");
 	});
 
 	it("blocks with a targeted unsupported result when only some plain commands match", () => {
