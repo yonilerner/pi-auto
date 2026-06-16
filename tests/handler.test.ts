@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
-import { fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
+import { decideSandboxReviewOnlyPrefix, fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
@@ -88,21 +88,56 @@ function assessment(opts: Partial<ReviewerAssessment> & Pick<ReviewerAssessment,
 	};
 }
 
-describe("matchesSandboxReviewOnlyPrefix", () => {
+describe("decideSandboxReviewOnlyPrefix", () => {
 	it("matches plain commands whose argv starts with a configured prefix", () => {
+		expect(decideSandboxReviewOnlyPrefix("gh auth status", [["gh"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["gh", "pr"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("gh pr create", [["gh", "auth"]]).kind).toBe("no-match");
 		expect(matchesSandboxReviewOnlyPrefix("gh auth status", [["gh"]])).toBe(true);
-		expect(matchesSandboxReviewOnlyPrefix("/usr/bin/gh pr create", [["gh", "pr"]])).toBe(true);
-		expect(matchesSandboxReviewOnlyPrefix("gh pr create", [["gh", "auth"]])).toBe(false);
 	});
 
-	it("requires every command in a simple compound script to match", () => {
-		expect(matchesSandboxReviewOnlyPrefix("gh auth status && gh pr list", [["gh"]])).toBe(true);
-		expect(matchesSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]])).toBe(false);
+	it("matches when every command in a simple compound script matches", () => {
+		expect(decideSandboxReviewOnlyPrefix("gh auth status && gh pr list", [["gh"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("match");
 	});
 
-	it("does not match shell constructs the plain-command parser rejects", () => {
-		expect(matchesSandboxReviewOnlyPrefix("GH_DEBUG=api gh auth status", [["gh"]])).toBe(false);
-		expect(matchesSandboxReviewOnlyPrefix("gh auth status > out.txt", [["gh"]])).toBe(false);
+	it("blocks with a targeted unsupported result when only some plain commands match", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]]);
+		expect(decision.kind).toBe("unsupported");
+		if (decision.kind === "unsupported") {
+			expect(decision.reason).toContain("not every command");
+			expect(decision.reason).toContain("sandbox.reviewOnlyCommandPrefixes");
+		}
+	});
+
+	it("blocks review-only-looking commands with unsupported shell syntax instead of falling through to sandbox", () => {
+		const commands = [
+			"GH_DEBUG=api gh auth status",
+			"gh pr create --body $'hello\\nworld'",
+			"gh auth status > out.txt",
+			"gh auth status < in.txt",
+			"gh pr create --body \"$(cat body.md)\"",
+			"if true; then gh auth status; fi",
+		];
+		for (const command of commands) {
+			const decision = decideSandboxReviewOnlyPrefix(command, [["gh"]]);
+			expect(decision.kind, command).toBe("unsupported");
+			if (decision.kind === "unsupported") {
+				expect(decision.reason).toContain("Rewrite it as plain argv-only");
+			}
+		}
+	});
+
+	it("does not block unrelated commands that mention the review-only command as an argument", () => {
+		expect(decideSandboxReviewOnlyPrefix("echo gh", [["gh"]]).kind).toBe("no-match");
+		expect(decideSandboxReviewOnlyPrefix("printf gh", [["gh"]]).kind).toBe("no-match");
+	});
+
+	it("uses longer configured prefixes when enough static argv is visible", () => {
+		expect(decideSandboxReviewOnlyPrefix("gh pr create --title hi", [["gh", "pr"]]).kind).toBe("match");
+		expect(decideSandboxReviewOnlyPrefix("gh issue list", [["gh", "pr"]]).kind).toBe("no-match");
+		expect(decideSandboxReviewOnlyPrefix("gh pr create --body $'x'", [["gh", "pr"]]).kind).toBe("unsupported");
+		expect(decideSandboxReviewOnlyPrefix("gh $(cat args)", [["gh", "pr"]]).kind).toBe("unsupported");
 	});
 });
 
