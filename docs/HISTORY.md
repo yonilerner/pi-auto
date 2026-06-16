@@ -601,11 +601,15 @@ exported git config env vars (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_VALUE_N=<generated file>`) so every process in the sandboxed
 shell inherits a generated exclude file. The exclude patterns are derived
 from ASRT's own mandatory-deny list (`DANGEROUS_FILES` +
-`getDangerousDirectories()`), with existing user/global git excludes
-concatenated into the generated file so the override does not drop normal
-ignore behavior. The `.gitmodules` / mandatory-deny `Permission denied`
-heuristic is likewise Linux-only; macOS uses Seatbelt rather than the
-bubblewrap mount-point strategy.
+`getDangerousDirectories()`). Initially this also concatenated the
+configured user/global git excludes, but repo-local git config can point
+`core.excludesFile` at arbitrary host paths. The generated file now only
+preserves Git's default global ignore file (`$XDG_CONFIG_HOME/git/ignore`,
+or `~/.config/git/ignore`) and skips it when it is a symlink; repos using
+non-standard global exclude paths simply lose that preservation inside the
+sandbox. The `.gitmodules` / mandatory-deny `Permission denied` heuristic
+is likewise Linux-only; macOS uses Seatbelt rather than the bubblewrap
+mount-point strategy.
 
 ## Open work
 

@@ -17,9 +17,9 @@
  * continue to flow through pi-auto's path-scoping reviewer in scope.ts.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -333,36 +333,29 @@ function buildSandboxGitExcludesFileContent(cwd: string): string {
 		.join("\n");
 }
 
-function readExistingGitExcludeContents(cwd: string): string {
-	const paths = new Set<string>();
-	const configured = resolveConfiguredGitExcludesFile(cwd);
-	if (configured) paths.add(configured);
-	const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
-	paths.add(path.join(xdgConfigHome, "git", "ignore"));
-	const chunks: string[] = [];
-	for (const candidate of paths) {
-		if (!candidate || !existsSync(candidate)) continue;
-		try {
-			chunks.push(readFileSync(candidate, "utf8"));
-		} catch {
-			// Best-effort only. Losing user excludes here is less bad than failing
-			// every sandboxed bash command because an ignore file is unreadable.
-		}
-	}
-	return chunks.join("\n").trim();
+function readExistingGitExcludeContents(_cwd: string): string {
+	// Do not read core.excludesFile from git config here. Repository-local config
+	// is untrusted and could point core.excludesFile at a sensitive host file;
+	// preserving non-standard exclude paths is not worth that disclosure risk.
+	const existing = readNonSymlinkTextFile(defaultGitExcludesFilePath());
+	return existing?.trim() ?? "";
 }
 
-function resolveConfiguredGitExcludesFile(cwd: string): string | undefined {
-	const result = spawnSync("git", ["config", "--get", "--path", "core.excludesFile"], {
-		cwd,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-	});
-	if (result.status !== 0) return undefined;
-	const raw = result.stdout.trim().split("\n").at(-1)?.trim();
-	if (!raw) return undefined;
-	if (raw.startsWith("~/")) return path.join(homedir(), raw.slice(2));
-	return path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+function defaultGitExcludesFilePath(): string {
+	const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config");
+	return path.join(xdgConfigHome, "git", "ignore");
+}
+
+function readNonSymlinkTextFile(filePath: string): string | undefined {
+	try {
+		const stat = lstatSync(filePath);
+		if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
+		return readFileSync(filePath, "utf8");
+	} catch {
+		// Best-effort only. Losing user excludes here is less bad than failing
+		// every sandboxed bash command because an ignore file is unreadable.
+		return undefined;
+	}
 }
 
 function parseGitConfigCount(raw: string | undefined): number {

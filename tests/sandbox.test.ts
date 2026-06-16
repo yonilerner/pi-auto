@@ -18,7 +18,9 @@
  * Integration with the actual sandbox is covered manually + via live tests.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -589,6 +591,13 @@ describe("filterNoiseFromAnnotation", () => {
 });
 
 describe("sandbox git excludes", () => {
+	function generatedExcludeContentFor(cwd: string): string {
+		const wrapped = withSandboxGitExcludes("git status", cwd, "linux");
+		const excludePath = /export GIT_CONFIG_VALUE_\d+='([^']+)'/.exec(wrapped)?.[1];
+		expect(excludePath).toBeTruthy();
+		return readFileSync(excludePath as string, "utf8");
+	}
+
 	it("derives git-ignore patterns from ASRT's mandatory deny list", () => {
 		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
 		expect(patterns).toContain(".bashrc");
@@ -624,6 +633,53 @@ describe("sandbox git excludes", () => {
 			} else {
 				process.env.GIT_CONFIG_COUNT = oldCount;
 			}
+		}
+	});
+
+	it("preserves only the default git ignore file, not repo-configured core.excludesFile", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			mkdirSync(path.join(xdg, "git"), { recursive: true });
+			writeFileSync(path.join(xdg, "git", "ignore"), "DEFAULT_IGNORE\n", "utf8");
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const sensitive = path.join(dir, "sensitive-host-file");
+			writeFileSync(sensitive, "SHOULD_NOT_READ\n", "utf8");
+			const repo = path.join(dir, "repo");
+			mkdirSync(path.join(repo, ".git"), { recursive: true });
+			writeFileSync(path.join(repo, ".git", "config"), `[core]\n\texcludesFile = ${sensitive}\n`, "utf8");
+
+			const content = generatedExcludeContentFor(repo);
+			expect(content).toContain("DEFAULT_IGNORE");
+			expect(content).not.toContain("SHOULD_NOT_READ");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("skips the default git ignore file when it is a symlink", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			mkdirSync(path.join(xdg, "git"), { recursive: true });
+			const sensitive = path.join(dir, "sensitive-host-file");
+			writeFileSync(sensitive, "SHOULD_NOT_READ\n", "utf8");
+			symlinkSync(sensitive, path.join(xdg, "git", "ignore"));
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const repo = path.join(dir, "repo");
+			mkdirSync(repo, { recursive: true });
+			const content = generatedExcludeContentFor(repo);
+			expect(content).not.toContain("SHOULD_NOT_READ");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
