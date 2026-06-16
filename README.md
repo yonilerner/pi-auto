@@ -72,6 +72,8 @@ A prefix matches if it is a token-by-token prefix of the proposed argv. `["npm",
 
 Extra prefixes also apply inside compound bash chains: with the above, `bash -lc "npm test && pnpm lint"` is fast-pathed.
 
+`extraSafeCommandPrefixes` wins over every other gate. If a command matches the safe-list it bypasses both `sandbox.reviewOnlyCommandPrefixes` routing and the sandbox wrap itself, in every `sandbox.mode`. Use this to opt a tool out of the sandbox entirely when you've verified it's safe — e.g. `[["but"]]` lets `gitbutler` run bare so it doesn't trip over ASRT's `.gitmodules` placeholder.
+
 ## Behavior
 
 - **allow** → tool runs. A small inline notification shows the risk level, authorization, and rationale (toggle off with `/pi-auto-toggle-announce`).

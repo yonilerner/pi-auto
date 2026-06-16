@@ -471,6 +471,16 @@ export default function (pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		// Safe-list fast path. Run before review-only routing and sandbox wrap:
+		// a user-asserted `extraSafeCommandPrefixes` entry (or a built-in
+		// known-safe match) means "I'm certain this is fine", which has to beat
+		// every other gate. Without this hoist, `extraSafeCommandPrefixes` would
+		// be a no-op for bash whenever `sandbox.mode != "off"` — review-only
+		// prefixes would preempt it in `escape-only`, and the sandbox wrap would
+		// silently apply on top of it in `review-then-escape`.
+		const scope = decideScope(event, ctx.cwd, settings);
+		if (!scope.review) return undefined;
+
 		// Some tools are incompatible with the sandbox in ways that look like
 		// ordinary application errors (for example, `gh` cannot always read an OS
 		// keyring from ASRT's Linux sandbox). For configured prefixes, skip the
@@ -492,25 +502,22 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		// Pre-review step for review-then-escape mode. Mirrors the no-sandbox
-		// flow: deterministic safe-command fast path first (via decideScope), then
-		// the LLM reviewer. If the reviewer denies, we block here; the sandbox
-		// wrap is skipped entirely.
+		// flow: LLM reviewer first, then sandbox wrap if allowed. The safe-list
+		// fast path is already covered by the hoisted `decideScope` above, so
+		// here we know `scope.review === true`.
 		if (settings.sandbox.mode === "review-then-escape") {
-			const scope = decideScope(event, ctx.cwd, settings);
-			if (scope.review) {
-				setStatus(ctx, `reviewing ${event.toolName}…`);
-				const result = await reviewAction(scope.action, ctx, settings);
-				clearStatus(ctx);
-				const gating = await handleReviewResult(
-					result,
-					scope.action,
-					ctx,
-					breaker,
-					settings,
-					currentTurnId,
-				);
-				if (gating && gating.block === true) return gating;
-			}
+			setStatus(ctx, `reviewing ${event.toolName}…`);
+			const result = await reviewAction(scope.action, ctx, settings);
+			clearStatus(ctx);
+			const gating = await handleReviewResult(
+				result,
+				scope.action,
+				ctx,
+				breaker,
+				settings,
+				currentTurnId,
+			);
+			if (gating && gating.block === true) return gating;
 		}
 
 		// Initialize the sandbox lazily on first wrap. We've already validated
