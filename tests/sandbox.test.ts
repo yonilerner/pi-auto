@@ -18,6 +18,7 @@
  * Integration with the actual sandbox is covered manually + via live tests.
  */
 
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	_noiseOperationsForTest,
@@ -28,7 +29,9 @@ import {
 	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
 	filterNoiseFromAnnotation,
+	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
+	withSandboxGitExcludes,
 } from "../extensions/sandbox.ts";
 import type { SandboxSettings } from "../extensions/types.ts";
 
@@ -526,6 +529,42 @@ describe("filterNoiseFromAnnotation", () => {
 		expect(NOISE.length).toBeGreaterThan(0);
 		for (const op of NOISE) {
 			expect(op).toMatch(/^(?:sysctl-read|mach-lookup)/);
+		}
+	});
+});
+
+describe("sandbox git excludes", () => {
+	it("derives git-ignore patterns from ASRT's mandatory deny list", () => {
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns).toContain(".bashrc");
+		expect(patterns).toContain(".gitconfig");
+		expect(patterns).toContain(".mcp.json");
+		expect(patterns).toContain(".vscode");
+		expect(patterns).toContain(".idea");
+		expect(patterns).toContain(".claude/agents");
+		expect(patterns).toContain(".claude/commands");
+		expect(patterns).not.toContain(".git");
+	});
+
+	it("injects a generated core.excludesFile into the inherited command environment", () => {
+		const oldCount = process.env.GIT_CONFIG_COUNT;
+		process.env.GIT_CONFIG_COUNT = "2";
+		try {
+			const wrapped = withSandboxGitExcludes("git status", process.cwd());
+			expect(wrapped).toContain("export GIT_CONFIG_COUNT='3'");
+			expect(wrapped).toContain("export GIT_CONFIG_KEY_2='core.excludesFile'");
+			expect(wrapped).toContain("\ngit status");
+			const excludePath = /export GIT_CONFIG_VALUE_2='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			const content = readFileSync(excludePath as string, "utf8");
+			expect(content).toContain(".bashrc");
+			expect(content).toContain(".claude/agents");
+		} finally {
+			if (oldCount === undefined) {
+				delete process.env.GIT_CONFIG_COUNT;
+			} else {
+				process.env.GIT_CONFIG_COUNT = oldCount;
+			}
 		}
 	});
 });

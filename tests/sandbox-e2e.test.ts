@@ -50,6 +50,7 @@ import {
 	_recordingAskCallbackForTest,
 	_resetNetworkAttemptsForTest,
 	buildRetryReason,
+	cleanupAfterSandboxCommand,
 	detectSandboxDenialForCommand,
 	getNetworkAttemptsSince,
 	runBareCommand,
@@ -137,6 +138,7 @@ async function runScenario(args: {
 		process.cwd(),
 		args.timeoutMs ? AbortSignal.timeout(args.timeoutMs) : undefined,
 	);
+	cleanupAfterSandboxCommand();
 	const combinedOutput = `${exec.stdout}${exec.stderr}`;
 	const detect = detectSandboxDenialForCommand(
 		command,
