@@ -591,11 +591,40 @@ describe("filterNoiseFromAnnotation", () => {
 });
 
 describe("sandbox git excludes", () => {
+	const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+
+	function withCleanGitConfigEnv<T>(fn: () => T): T {
+		const saved = new Map<string, string | undefined>();
+		for (const key of Object.keys(process.env)) {
+			if (!GIT_CONFIG_ENV_RE.test(key)) continue;
+			saved.set(key, process.env[key]);
+			delete process.env[key];
+		}
+		for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]) {
+			saved.set(key, process.env[key]);
+		}
+		process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		try {
+			return fn();
+		} finally {
+			for (const key of Object.keys(process.env)) {
+				if (GIT_CONFIG_ENV_RE.test(key)) delete process.env[key];
+			}
+			for (const [key, value] of saved) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	}
+
 	function generatedExcludePathFor(cwd: string): string {
-		const wrapped = withSandboxGitExcludes("git status", cwd, "linux");
-		const excludePath = /export GIT_CONFIG_VALUE_\d+='([^']+)'/.exec(wrapped)?.[1];
-		expect(excludePath).toBeTruthy();
-		return excludePath as string;
+		return withCleanGitConfigEnv(() => {
+			const wrapped = withSandboxGitExcludes("git status", cwd, "linux");
+			const excludePath = /export GIT_CONFIG_VALUE_\d+='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			return excludePath as string;
+		});
 	}
 
 	function generatedExcludeContentFor(cwd: string): string {
@@ -619,9 +648,12 @@ describe("sandbox git excludes", () => {
 	});
 
 	it("injects a generated core.excludesFile into the inherited command environment on Linux", () => {
-		const oldCount = process.env.GIT_CONFIG_COUNT;
-		process.env.GIT_CONFIG_COUNT = "2";
-		try {
+		withCleanGitConfigEnv(() => {
+			process.env.GIT_CONFIG_COUNT = "2";
+			process.env.GIT_CONFIG_KEY_0 = "user.name";
+			process.env.GIT_CONFIG_VALUE_0 = "test";
+			process.env.GIT_CONFIG_KEY_1 = "user.email";
+			process.env.GIT_CONFIG_VALUE_1 = "test@example.invalid";
 			const wrapped = withSandboxGitExcludes("git status", process.cwd(), "linux");
 			expect(wrapped).toContain("export GIT_CONFIG_COUNT='3'");
 			expect(wrapped).toContain("export GIT_CONFIG_KEY_2='core.excludesFile'");
@@ -631,13 +663,7 @@ describe("sandbox git excludes", () => {
 			const content = readFileSync(excludePath as string, "utf8");
 			expect(content).toContain(".bashrc");
 			expect(content).toContain(".claude/agents");
-		} finally {
-			if (oldCount === undefined) {
-				delete process.env.GIT_CONFIG_COUNT;
-			} else {
-				process.env.GIT_CONFIG_COUNT = oldCount;
-			}
-		}
+		});
 	});
 
 	it("writes excludes to a fresh private temp file for each wrap", () => {
@@ -650,7 +676,7 @@ describe("sandbox git excludes", () => {
 		expect(lstatSync(first).mode & 0o777).toBe(0o600);
 	});
 
-	it("preserves only the default git ignore file, not repo-configured core.excludesFile", () => {
+	it("does not override a custom configured core.excludesFile", () => {
 		const oldXdg = process.env.XDG_CONFIG_HOME;
 		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
 		try {
@@ -659,15 +685,48 @@ describe("sandbox git excludes", () => {
 			writeFileSync(path.join(xdg, "git", "ignore"), "DEFAULT_IGNORE\n", "utf8");
 			process.env.XDG_CONFIG_HOME = xdg;
 
-			const sensitive = path.join(dir, "sensitive-host-file");
-			writeFileSync(sensitive, "SHOULD_NOT_READ\n", "utf8");
+			const custom = path.join(dir, "custom-global-ignore");
+			writeFileSync(custom, "SHOULD_KEEP_WORKING\n", "utf8");
 			const repo = path.join(dir, "repo");
-			mkdirSync(path.join(repo, ".git"), { recursive: true });
-			writeFileSync(path.join(repo, ".git", "config"), `[core]\n\texcludesFile = ${sensitive}\n`, "utf8");
+			mkdirSync(repo, { recursive: true });
 
-			const content = generatedExcludeContentFor(repo);
+			const wrapped = withCleanGitConfigEnv(() => {
+				process.env.GIT_CONFIG_COUNT = "1";
+				process.env.GIT_CONFIG_KEY_0 = "core.excludesFile";
+				process.env.GIT_CONFIG_VALUE_0 = custom;
+				return withSandboxGitExcludes("git status", repo, "linux");
+			});
+			expect(wrapped).toBe("git status");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("still injects when core.excludesFile is configured to Git's default ignore path", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			const defaultIgnore = path.join(xdg, "git", "ignore");
+			mkdirSync(path.dirname(defaultIgnore), { recursive: true });
+			writeFileSync(defaultIgnore, "DEFAULT_IGNORE\n", "utf8");
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const repo = path.join(dir, "repo");
+			mkdirSync(repo, { recursive: true });
+
+			const wrapped = withCleanGitConfigEnv(() => {
+				process.env.GIT_CONFIG_COUNT = "1";
+				process.env.GIT_CONFIG_KEY_0 = "core.excludesFile";
+				process.env.GIT_CONFIG_VALUE_0 = defaultIgnore;
+				return withSandboxGitExcludes("git status", repo, "linux");
+			});
+			const excludePath = /export GIT_CONFIG_VALUE_1='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			const content = readFileSync(excludePath as string, "utf8");
 			expect(content).toContain("DEFAULT_IGNORE");
-			expect(content).not.toContain("SHOULD_NOT_READ");
 		} finally {
 			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
 			else process.env.XDG_CONFIG_HOME = oldXdg;

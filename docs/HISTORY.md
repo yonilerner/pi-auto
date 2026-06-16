@@ -605,11 +605,13 @@ from ASRT's own mandatory-deny list (`DANGEROUS_FILES` +
 configured user/global git excludes, but repo-local git config can point
 `core.excludesFile` at arbitrary host paths. The generated file now only
 preserves Git's default global ignore file (`$XDG_CONFIG_HOME/git/ignore`,
-or `~/.config/git/ignore`) and skips it when it is a symlink; repos using
-non-standard global exclude paths simply lose that preservation inside the
-sandbox. The `.gitmodules` / mandatory-deny `Permission denied` heuristic
-is likewise Linux-only; macOS uses Seatbelt rather than the bubblewrap
-mount-point strategy.
+or `~/.config/git/ignore`) and skips it when it is a symlink. If the
+effective `core.excludesFile` is customized, pi-auto now skips this git
+config injection entirely rather than overriding the user's ignore policy;
+the failure mode is visible sandbox placeholders instead of accidentally
+tracking intentionally ignored files. The `.gitmodules` / mandatory-deny
+`Permission denied` heuristic is likewise Linux-only; macOS uses Seatbelt
+rather than the bubblewrap mount-point strategy.
 
 ## Open work
 

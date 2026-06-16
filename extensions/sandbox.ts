@@ -17,7 +17,7 @@
  * continue to flow through pi-auto's path-scoping reviewer in scope.ts.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -288,6 +288,7 @@ export function withSandboxGitExcludes(
 	platform: NodeJS.Platform = process.platform,
 ): string {
 	if (!isLinuxPlatform(platform)) return command;
+	if (!shouldInjectSandboxGitExcludes(cwd)) return command;
 	const excludeFile = ensureSandboxGitExcludesFile(cwd);
 	const existingCount = parseGitConfigCount(process.env.GIT_CONFIG_COUNT);
 	const assignments = [
@@ -339,11 +340,51 @@ function buildSandboxGitExcludesFileContent(cwd: string): string {
 }
 
 function readExistingGitExcludeContents(_cwd: string): string {
-	// Do not read core.excludesFile from git config here. Repository-local config
-	// is untrusted and could point core.excludesFile at a sensitive host file;
-	// preserving non-standard exclude paths is not worth that disclosure risk.
+	// Do not read custom core.excludesFile contents here. Repository-local config
+	// is untrusted and could point core.excludesFile at a sensitive host file.
+	// withSandboxGitExcludes skips the injection entirely when git reports a
+	// custom effective excludes path, preserving the user's ignore semantics
+	// instead of copying host file contents into a sandbox-visible temp file.
 	const existing = readNonSymlinkTextFile(defaultGitExcludesFilePath());
 	return existing?.trim() ?? "";
+}
+
+function shouldInjectSandboxGitExcludes(cwd: string): boolean {
+	const configured = readConfiguredGitExcludesFilePath(cwd);
+	if (!configured) return true;
+	return isSamePath(configured, defaultGitExcludesFilePath());
+}
+
+function readConfiguredGitExcludesFilePath(cwd: string): string | undefined {
+	const fromEnv = readConfiguredGitExcludesFilePathFromEnv();
+	if (fromEnv) return fromEnv;
+	try {
+		const result = spawnSync("git", ["config", "--path", "--get", "core.excludesFile"], {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		if (result.status !== 0 || typeof result.stdout !== "string") return undefined;
+		const out = result.stdout.trim();
+		return out.length > 0 ? out : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readConfiguredGitExcludesFilePathFromEnv(): string | undefined {
+	const count = parseGitConfigCount(process.env.GIT_CONFIG_COUNT);
+	for (let i = 0; i < count; i++) {
+		const key = process.env[`GIT_CONFIG_KEY_${i}`]?.toLowerCase();
+		if (key !== "core.excludesfile") continue;
+		const value = process.env[`GIT_CONFIG_VALUE_${i}`]?.trim();
+		return value || undefined;
+	}
+	return undefined;
+}
+
+function isSamePath(a: string, b: string): boolean {
+	return path.resolve(a) === path.resolve(b);
 }
 
 function defaultGitExcludesFilePath(): string {
