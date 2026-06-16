@@ -315,4 +315,4 @@ extensions/
 
 ## License
 
-MIT.
+MIT. See [`LICENSE`](./LICENSE) for the full text.
