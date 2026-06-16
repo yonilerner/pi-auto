@@ -42,7 +42,7 @@
  *   PI_AUTO_SANDBOX_E2E=1 npx vitest run tests/sandbox-e2e.test.ts -t "curl http"
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
@@ -50,6 +50,7 @@ import {
 	_recordingAskCallbackForTest,
 	_resetNetworkAttemptsForTest,
 	buildRetryReason,
+	cleanupAfterSandboxCommand,
 	detectSandboxDenialForCommand,
 	getNetworkAttemptsSince,
 	runBareCommand,
@@ -137,6 +138,7 @@ async function runScenario(args: {
 		process.cwd(),
 		args.timeoutMs ? AbortSignal.timeout(args.timeoutMs) : undefined,
 	);
+	cleanupAfterSandboxCommand();
 	const combinedOutput = `${exec.stdout}${exec.stderr}`;
 	const detect = detectSandboxDenialForCommand(
 		command,
@@ -371,6 +373,30 @@ PY`,
 			timeoutMs: 10_000,
 		});
 	}, 30_000);
+
+	it("mandatory deny .gitmodules read is annotated as file-read", async () => {
+		const gitmodulesPath = path.join(process.cwd(), ".gitmodules");
+		if (existsSync(gitmodulesPath)) {
+			throw new Error(
+				`Cannot run this e2e scenario because ${gitmodulesPath} already exists; ` +
+					"it needs ASRT to create the non-existent mandatory-deny mount point.",
+			);
+		}
+		const rec = await runScenario({
+			name: "mandatory-deny-gitmodules-read",
+			command: `python3 - <<'PY'
+from pathlib import Path
+Path('.gitmodules').read_bytes()
+PY`,
+			config: { allowedDomains: [], allowWrite: [process.cwd(), "/tmp"] },
+			timeoutMs: 10_000,
+		});
+		expect(rec.detect.denied).toBe(true);
+		// On Linux, ASRT may not populate the violation store for this mandatory
+		// deny bind-mount shape. The viable heuristic is the narrow text fallback:
+		// Permission denied/os error 13 near an ASRT mandatory-deny path.
+		expect(rec.retryReason).toContain(".gitmodules");
+	});
 
 	it("python filesystem write denied (path-extraction regression)", async () => {
 		// User-reported shape: Path.write_text with Python's PermissionError format.

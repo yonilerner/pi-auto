@@ -18,17 +18,24 @@
  * Integration with the actual sandbox is covered manually + via live tests.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	_noiseOperationsForTest,
 	_resetNetworkAttemptsForTest,
 	buildRetryReason,
 	buildSandboxRuntimeConfig,
 	detectSandboxDenial,
+	detectSandboxDenialForCommand,
 	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
 	filterNoiseFromAnnotation,
+	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
+	withSandboxGitExcludes,
 } from "../extensions/sandbox.ts";
 import type { SandboxSettings } from "../extensions/types.ts";
 
@@ -325,6 +332,59 @@ PermissionError: [Errno 1] Operation not permitted: '/tmp/pi-agent/sandbox-shoul
 	});
 });
 
+describe("detectSandboxDenialForCommand", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("classifies mandatory-deny Permission denied output as a sandbox denial", () => {
+		const output = [
+			"Error: Could not read '.gitmodules' file",
+			"",
+			"Caused by:",
+			"    Permission denied (os error 13)",
+		].join("\n");
+		const out = detectSandboxDenialForCommand("but status -fv", true, output, "linux");
+		expect(out.denied).toBe(true);
+		expect(out.reason).toBe("filesystem operation denied by sandbox");
+		expect(buildRetryReason(out.reason, out.annotatedOutput, [])).toContain(".gitmodules");
+	});
+
+	it("does not apply the Linux mandatory-deny Permission denied heuristic on macOS", () => {
+		const output = [
+			"Error: Could not read '.gitmodules' file",
+			"",
+			"Caused by:",
+			"    Permission denied (os error 13)",
+		].join("\n");
+		const out = detectSandboxDenialForCommand("but status -fv", true, output, "darwin");
+		expect(out.denied).toBe(false);
+	});
+
+	it("classifies ASRT file-read/file-write annotations as sandbox denials", () => {
+		vi.spyOn(SandboxManager, "annotateStderrWithSandboxFailures").mockReturnValue(
+			[
+				"Could not read '.gitmodules' file",
+				"Caused by:",
+				"    Permission denied (os error 13)",
+				"<sandbox_violations>",
+				"but(123) deny(1) file-read-data /home/me/repo/.gitmodules",
+				"</sandbox_violations>",
+			].join("\n"),
+		);
+
+		const out = detectSandboxDenialForCommand(
+			"but status -fv",
+			true,
+			"Could not read '.gitmodules' file\nCaused by:\n    Permission denied (os error 13)",
+		);
+
+		expect(out.denied).toBe(true);
+		expect(out.reason).toBe("filesystem operation denied by sandbox");
+		expect(out.annotatedOutput).toContain("file-read-data /home/me/repo/.gitmodules");
+	});
+});
+
 describe("buildRetryReason", () => {
 	it("uses the network-attempt host list when the denial is network-shaped", () => {
 		const reason = buildRetryReason(
@@ -526,6 +586,173 @@ describe("filterNoiseFromAnnotation", () => {
 		expect(NOISE.length).toBeGreaterThan(0);
 		for (const op of NOISE) {
 			expect(op).toMatch(/^(?:sysctl-read|mach-lookup)/);
+		}
+	});
+});
+
+describe("sandbox git excludes", () => {
+	const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+
+	function withCleanGitConfigEnv<T>(fn: () => T): T {
+		const saved = new Map<string, string | undefined>();
+		for (const key of Object.keys(process.env)) {
+			if (!GIT_CONFIG_ENV_RE.test(key)) continue;
+			saved.set(key, process.env[key]);
+			delete process.env[key];
+		}
+		for (const key of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]) {
+			saved.set(key, process.env[key]);
+		}
+		process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		try {
+			return fn();
+		} finally {
+			for (const key of Object.keys(process.env)) {
+				if (GIT_CONFIG_ENV_RE.test(key)) delete process.env[key];
+			}
+			for (const [key, value] of saved) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	}
+
+	function generatedExcludePathFor(cwd: string): string {
+		return withCleanGitConfigEnv(() => {
+			const wrapped = withSandboxGitExcludes("git status", cwd, "linux");
+			const excludePath = /export GIT_CONFIG_VALUE_\d+='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			return excludePath as string;
+		});
+	}
+
+	function generatedExcludeContentFor(cwd: string): string {
+		return readFileSync(generatedExcludePathFor(cwd), "utf8");
+	}
+
+	it("derives git-ignore patterns from ASRT's mandatory deny list", () => {
+		const patterns = getAsrtMandatoryDenyGitExcludePatterns();
+		expect(patterns).toContain(".bashrc");
+		expect(patterns).toContain(".gitconfig");
+		expect(patterns).toContain(".mcp.json");
+		expect(patterns).toContain(".vscode");
+		expect(patterns).toContain(".idea");
+		expect(patterns).toContain(".claude/agents");
+		expect(patterns).toContain(".claude/commands");
+		expect(patterns).not.toContain(".git");
+	});
+
+	it("does not inject git excludes on non-Linux platforms", () => {
+		expect(withSandboxGitExcludes("git status", process.cwd(), "darwin")).toBe("git status");
+	});
+
+	it("injects a generated core.excludesFile into the inherited command environment on Linux", () => {
+		withCleanGitConfigEnv(() => {
+			process.env.GIT_CONFIG_COUNT = "2";
+			process.env.GIT_CONFIG_KEY_0 = "user.name";
+			process.env.GIT_CONFIG_VALUE_0 = "test";
+			process.env.GIT_CONFIG_KEY_1 = "user.email";
+			process.env.GIT_CONFIG_VALUE_1 = "test@example.invalid";
+			const wrapped = withSandboxGitExcludes("git status", process.cwd(), "linux");
+			expect(wrapped).toContain("export GIT_CONFIG_COUNT='3'");
+			expect(wrapped).toContain("export GIT_CONFIG_KEY_2='core.excludesFile'");
+			expect(wrapped).toContain("\ngit status");
+			const excludePath = /export GIT_CONFIG_VALUE_2='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			const content = readFileSync(excludePath as string, "utf8");
+			expect(content).toContain(".bashrc");
+			expect(content).toContain(".claude/agents");
+		});
+	});
+
+	it("writes excludes to a fresh private temp file for each wrap", () => {
+		const first = generatedExcludePathFor(process.cwd());
+		const second = generatedExcludePathFor(process.cwd());
+		expect(second).not.toBe(first);
+		expect(path.dirname(first)).not.toBe(path.dirname(second));
+		expect(lstatSync(first).isSymbolicLink()).toBe(false);
+		expect(lstatSync(path.dirname(first)).mode & 0o777).toBe(0o700);
+		expect(lstatSync(first).mode & 0o777).toBe(0o600);
+	});
+
+	it("does not override a custom configured core.excludesFile", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			mkdirSync(path.join(xdg, "git"), { recursive: true });
+			writeFileSync(path.join(xdg, "git", "ignore"), "DEFAULT_IGNORE\n", "utf8");
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const custom = path.join(dir, "custom-global-ignore");
+			writeFileSync(custom, "SHOULD_KEEP_WORKING\n", "utf8");
+			const repo = path.join(dir, "repo");
+			mkdirSync(repo, { recursive: true });
+
+			const wrapped = withCleanGitConfigEnv(() => {
+				process.env.GIT_CONFIG_COUNT = "1";
+				process.env.GIT_CONFIG_KEY_0 = "core.excludesFile";
+				process.env.GIT_CONFIG_VALUE_0 = custom;
+				return withSandboxGitExcludes("git status", repo, "linux");
+			});
+			expect(wrapped).toBe("git status");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("still injects when core.excludesFile is configured to Git's default ignore path", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			const defaultIgnore = path.join(xdg, "git", "ignore");
+			mkdirSync(path.dirname(defaultIgnore), { recursive: true });
+			writeFileSync(defaultIgnore, "DEFAULT_IGNORE\n", "utf8");
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const repo = path.join(dir, "repo");
+			mkdirSync(repo, { recursive: true });
+
+			const wrapped = withCleanGitConfigEnv(() => {
+				process.env.GIT_CONFIG_COUNT = "1";
+				process.env.GIT_CONFIG_KEY_0 = "core.excludesFile";
+				process.env.GIT_CONFIG_VALUE_0 = defaultIgnore;
+				return withSandboxGitExcludes("git status", repo, "linux");
+			});
+			const excludePath = /export GIT_CONFIG_VALUE_1='([^']+)'/.exec(wrapped)?.[1];
+			expect(excludePath).toBeTruthy();
+			const content = readFileSync(excludePath as string, "utf8");
+			expect(content).toContain("DEFAULT_IGNORE");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("skips the default git ignore file when it is a symlink", () => {
+		const oldXdg = process.env.XDG_CONFIG_HOME;
+		const dir = mkdtempSync(path.join(tmpdir(), "pi-auto-git-excludes-"));
+		try {
+			const xdg = path.join(dir, "xdg");
+			mkdirSync(path.join(xdg, "git"), { recursive: true });
+			const sensitive = path.join(dir, "sensitive-host-file");
+			writeFileSync(sensitive, "SHOULD_NOT_READ\n", "utf8");
+			symlinkSync(sensitive, path.join(xdg, "git", "ignore"));
+			process.env.XDG_CONFIG_HOME = xdg;
+
+			const repo = path.join(dir, "repo");
+			mkdirSync(repo, { recursive: true });
+			const content = generatedExcludeContentFor(repo);
+			expect(content).not.toContain("SHOULD_NOT_READ");
+		} finally {
+			if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = oldXdg;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

@@ -577,6 +577,42 @@ override that removes `.` intentionally removes workspace write access.
 `/tmp` is no longer a default write root; it must be listed explicitly if
 a workflow needs it.
 
+### Linux sandbox mount-point cleanup
+
+Found that ASRT's Linux bubblewrap backend materializes empty host-side
+mount-point placeholders for mandatory deny paths that do not already
+exist under the writable cwd (`.bashrc`, `.gitconfig`, `.claude/agents`,
+etc.). `SandboxManager.wrapWithSandbox()` increments ASRT's active
+sandbox counter, but pi-auto never called the matching
+`SandboxManager.cleanupAfterCommand()` after bash completion, so the
+placeholders persisted and showed up as untracked dotfiles in `git
+status`.
+
+The bash `tool_result` path now calls a small `cleanupAfterSandboxCommand`
+wrapper for every sandboxed bash call before denial/escape handling.
+ASRT's `reset()` still remains the session-level safety net, but normal
+command completion now removes these ghost files promptly.
+
+Follow-up: cleanup alone is insufficient for commands that run `git
+status` / `git add -A` while the placeholders are mounted inside the
+Linux sandbox. On Linux only, pi-auto now prepends sandboxed bash with
+exported git config env vars (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_N=core.excludesFile`,
+`GIT_CONFIG_VALUE_N=<generated file>`) so every process in the sandboxed
+shell inherits a generated exclude file. The exclude patterns are derived
+from ASRT's own mandatory-deny list (`DANGEROUS_FILES` +
+`getDangerousDirectories()`). Initially this also concatenated the
+configured user/global git excludes, but repo-local git config can point
+`core.excludesFile` at arbitrary host paths. The generated file now only
+preserves Git's default global ignore file (`$XDG_CONFIG_HOME/git/ignore`,
+or `~/.config/git/ignore`) and skips it when it is a symlink. If the
+effective `core.excludesFile` is customized, pi-auto now skips this git
+config injection entirely rather than overriding the user's ignore policy;
+the failure mode is visible sandbox placeholders instead of accidentally
+tracking intentionally ignored files. The `.gitmodules` / mandatory-deny
+`Permission denied` heuristic is likewise Linux-only; macOS uses Seatbelt
+rather than the bubblewrap mount-point strategy.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).
