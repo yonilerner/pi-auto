@@ -39,7 +39,7 @@ const DEFAULTS: PiAutoSettings = {
 		deniedDomains: [],
 		allowRead: [],
 		denyRead: [],
-		allowWrite: [],
+		allowWrite: ["."],
 		denyWrite: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,

@@ -99,7 +99,7 @@ async function initSandbox(config: SandboxConfig): Promise<void> {
 		filesystem: {
 			allowRead: config.allowRead ?? [],
 			denyRead: config.denyRead ?? [],
-			allowWrite: config.allowWrite ?? [process.cwd(), "/tmp"],
+			allowWrite: config.allowWrite ?? ["."],
 			denyWrite: config.denyWrite ?? [],
 		},
 	};
@@ -358,7 +358,7 @@ PY`,
 		await runScenario({
 			name: "fs-write-denied",
 			command: "echo hi > /etc/test-pi-auto-sandbox-e2e",
-			config: { allowedDomains: [], allowWrite: [process.cwd(), "/tmp"] },
+			config: { allowedDomains: [], allowWrite: ["."] },
 			timeoutMs: 10_000,
 		});
 	}, 30_000);
@@ -373,19 +373,17 @@ PY`,
 	}, 30_000);
 
 	it("python filesystem write denied (path-extraction regression)", async () => {
-		// User-reported shape: Path.write_text under /tmp/pi-agent. Default
-		// allowWrite is [cwd, /tmp]; /tmp/pi-agent is technically inside /tmp
-		// but ASRT may normalize /tmp → /private/tmp and reject. The point of
-		// this scenario is the stderr SHAPE — Python's PermissionError format
-		// puts the path after "Operation not permitted", which the bash regex
-		// misses. extractDeniedPathFromStderr should now catch it.
+		// User-reported shape: Path.write_text with Python's PermissionError format.
+		// The point of this scenario is the stderr SHAPE — the path appears after
+		// "Operation not permitted", which the bash regex misses.
+		// extractDeniedPathFromStderr should now catch it.
 		const rec = await runScenario({
 			name: "python-fs-write-denied",
 			command: `python3 - <<'PY'
 from pathlib import Path
 Path('/etc/test-pi-auto-sandbox-pyfs').write_text('blocked\\n')
 PY`,
-			config: { allowedDomains: [], allowWrite: [process.cwd(), "/tmp"] },
+			config: { allowedDomains: [], allowWrite: ["."] },
 			timeoutMs: 10_000,
 		});
 		expect(rec.detect.denied).toBe(true);

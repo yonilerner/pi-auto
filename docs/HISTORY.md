@@ -568,6 +568,15 @@ runtime so the next bash call reinitializes with the new config. Load
 warnings are printed in the reload result rather than requiring a pi
 restart to discover malformed files.
 
+### Workspace-only default write roots
+
+Made the sandbox write-root default explicit in `DEFAULT_SETTINGS` by
+setting `sandbox.allowWrite` to `["."]`. `buildSandboxRuntimeConfig`
+passes the configured write roots through verbatim, so a project/global
+override that removes `.` intentionally removes workspace write access.
+`/tmp` is no longer a default write root; it must be listed explicitly if
+a workflow needs it.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).

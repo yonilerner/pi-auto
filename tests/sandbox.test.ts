@@ -48,9 +48,9 @@ function makeSettings(overrides: Partial<SandboxSettings> = {}): SandboxSettings
 }
 
 describe("buildSandboxRuntimeConfig", () => {
-	it("defaults allowWrite to cwd + /tmp when user-provided allowWrite is empty", () => {
+	it("passes an empty allowWrite through verbatim", () => {
 		const cfg = buildSandboxRuntimeConfig(makeSettings(), "/home/me/project");
-		expect(cfg.filesystem?.allowWrite).toEqual(["/home/me/project", "/tmp"]);
+		expect(cfg.filesystem?.allowWrite).toEqual([]);
 	});
 
 	it("uses explicit allowWrite when the user provided one", () => {
