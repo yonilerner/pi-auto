@@ -35,6 +35,7 @@ const SETTINGS: PiAutoSettings = {
 		allowWrite: [],
 		denyWrite: [],
 		reviewOnlyCommandPrefixes: [],
+		allowedDangerousFiles: [],
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},

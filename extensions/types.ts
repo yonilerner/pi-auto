@@ -97,6 +97,24 @@ export interface SandboxSettings {
 	 */
 	reviewOnlyCommandPrefixes: string[][];
 	/**
+	 * Filenames to drop from `@anthropic-ai/sandbox-runtime`'s hardcoded
+	 * `DANGEROUS_FILES` mandatory-deny set before sandbox initialization.
+	 *
+	 * Entries must match the exact basename ASRT denies. As of this writing
+	 * the candidates are: `.gitconfig`, `.gitmodules`, `.bashrc`, `.bash_profile`,
+	 * `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`, `.mcp.json`. Unknown
+	 * entries are ignored (so it's safe to list a name ASRT may add later).
+	 *
+	 * Common use: add `.gitmodules` so `git`/`but`/`gh` stop logging a benign
+	 * `permission denied` on every invocation (libgit2 stats `.gitmodules` to
+	 * detect submodules). Trade-off: each entry removed is one fewer guard
+	 * against shell-rc/config-file exploits inside the sandbox. Only add files
+	 * you understand the impact of — e.g. `.gitconfig` allows `[core] sshCommand`
+	 * style code execution, whereas `.gitmodules` is inert unless you also run
+	 * `git submodule update`.
+	 */
+	allowedDangerousFiles: string[];
+	/**
 	 * Status-bar lock indicator when mode != off.
 	 */
 	showStatusIndicator: boolean;
