@@ -7,10 +7,14 @@ import {
 	defaultPerProjectWritePath,
 	findPerProjectPath,
 	loadSettings,
+	modifySettingArrayField,
+	nextArrayForAppend,
+	nextArrayForRemove,
 	resolveUserGlobalPath,
 	saveSettingField,
 } from "../extensions/settings-store.ts";
 import type { PiAutoSettings } from "../extensions/types.ts";
+import { readFileSync } from "node:fs";
 
 const DEFAULTS: PiAutoSettings = {
 	reviewerProvider: "openai",
@@ -375,6 +379,171 @@ describe("defaultPerProjectWritePath", () => {
 		const nested = path.join(workdir, "loose");
 		mkdirSync(nested, { recursive: true });
 		expect(defaultPerProjectWritePath(nested)).toBe(path.join(nested, ".agents/pi-auto.json"));
+	});
+});
+
+describe("nextArrayForAppend", () => {
+	it("copies inherited items when the file has no entry for the field", () => {
+		// This is the case the TODO targets: the project layer has never set
+		// `sensitivePathPatterns`, but the user-global layer contributes 3
+		// patterns. Adding one project-level pattern must preserve all 3, not
+		// clobber them down to a one-element list.
+		expect(nextArrayForAppend(undefined, ["a", "b", "c"], "d")).toEqual(["a", "b", "c", "d"]);
+	});
+
+	it("appends to the file-level array when one is already present", () => {
+		// Once the project layer has an explicit array, it stops inheriting —
+		// further adds extend the project array as-is.
+		expect(nextArrayForAppend(["x"], ["a", "b"], "y")).toEqual(["x", "y"]);
+	});
+
+	it("treats an empty file array as a real (non-inheriting) override", () => {
+		// Distinct from `undefined`: the project file explicitly set the array
+		// to []. That's an intentional reset, so subsequent adds must not pull
+		// inherited entries back in.
+		expect(nextArrayForAppend([], ["a", "b"], "x")).toEqual(["x"]);
+	});
+
+	it("handles empty inherited arrays", () => {
+		expect(nextArrayForAppend(undefined, [], "a")).toEqual(["a"]);
+	});
+
+	it("does not mutate the inputs", () => {
+		const inherited = ["a", "b"] as const;
+		const current = ["x"] as const;
+		nextArrayForAppend(current, inherited, "y");
+		expect(inherited).toEqual(["a", "b"]);
+		expect(current).toEqual(["x"]);
+	});
+});
+
+describe("nextArrayForRemove", () => {
+	it("materializes the inherited list before removing, when the file has no entry", () => {
+		// Same mental model as append: the items the user sees in the UI are
+		// the inherited ones, and "remove this one" must produce a project
+		// array that mirrors that minus the chosen index.
+		expect(nextArrayForRemove(undefined, ["a", "b", "c"], 1)).toEqual(["a", "c"]);
+	});
+
+	it("removes from the file array when one is already present", () => {
+		expect(nextArrayForRemove(["x", "y", "z"], ["a", "b"], 0)).toEqual(["y", "z"]);
+	});
+
+	it("returns unchanged when index is out of range", () => {
+		expect(nextArrayForRemove(["x"], [], 5)).toEqual(["x"]);
+		expect(nextArrayForRemove(undefined, ["a"], -1)).toEqual(["a"]);
+	});
+});
+
+describe("modifySettingArrayField", () => {
+	it("copies inherited items into a previously-unset project array on first append", () => {
+		// End-to-end: project file is empty, user-global contributes 2 patterns.
+		// User adds one via the UI; the file must end up with all 3.
+		const filePath = path.join(workdir, ".agents/pi-auto.json");
+		writeJson(filePath, {});
+		modifySettingArrayField({
+			filePath,
+			read: (p) => p.sensitivePathPatterns,
+			write: (p, v) => {
+				p.sensitivePathPatterns = v;
+			},
+			inheritedItems: ["~/.ssh", "~/.aws"],
+			op: { kind: "append", item: "~/.secret" },
+		});
+		const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+		expect(parsed.sensitivePathPatterns).toEqual(["~/.ssh", "~/.aws", "~/.secret"]);
+	});
+
+	it("does not drop other fields when persisting the array", () => {
+		// Verifies the partial-merge path — if the project file already sets
+		// reviewerModel, an unrelated list-field edit must not lose it.
+		const filePath = path.join(workdir, "config.json");
+		writeJson(filePath, { reviewerModel: "claude-haiku-4-5" });
+		modifySettingArrayField({
+			filePath,
+			read: (p) => p.sensitivePathPatterns,
+			write: (p, v) => {
+				p.sensitivePathPatterns = v;
+			},
+			inheritedItems: [],
+			op: { kind: "append", item: "x" },
+		});
+		const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+		expect(parsed.reviewerModel).toBe("claude-haiku-4-5");
+		expect(parsed.sensitivePathPatterns).toEqual(["x"]);
+	});
+
+	it("handles nested sandbox sub-field arrays without dropping sibling sandbox keys", () => {
+		// The most subtle case: the file has `sandbox.mode` set but no
+		// `sandbox.allowedDomains` entry. Adding a domain must (a) copy the
+		// inherited domains, (b) leave `sandbox.mode` intact, (c) not flatten
+		// the sandbox sub-object up to the root.
+		const filePath = path.join(workdir, "config.json");
+		writeJson(filePath, { sandbox: { mode: "escape-only" } });
+		modifySettingArrayField({
+			filePath,
+			read: (p) => p.sandbox?.allowedDomains,
+			write: (p, v) => {
+				p.sandbox = { ...(p.sandbox ?? {}), allowedDomains: v } as PiAutoSettings["sandbox"];
+			},
+			inheritedItems: ["api.github.com"],
+			op: { kind: "append", item: "registry.npmjs.org" },
+		});
+		const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+		expect(parsed.sandbox.mode).toBe("escape-only");
+		expect(parsed.sandbox.allowedDomains).toEqual(["api.github.com", "registry.npmjs.org"]);
+	});
+
+	it("creates parent dirs and the file when neither exists yet", () => {
+		const filePath = path.join(workdir, "a/b/c/pi-auto.json");
+		modifySettingArrayField({
+			filePath,
+			read: (p) => p.sensitivePathPatterns,
+			write: (p, v) => {
+				p.sensitivePathPatterns = v;
+			},
+			inheritedItems: ["~/.ssh"],
+			op: { kind: "append", item: "~/.aws" },
+		});
+		const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+		expect(parsed.sensitivePathPatterns).toEqual(["~/.ssh", "~/.aws"]);
+	});
+
+	it("removes from inherited list on first remove", () => {
+		const filePath = path.join(workdir, "config.json");
+		writeJson(filePath, {});
+		modifySettingArrayField({
+			filePath,
+			read: (p) => p.sensitivePathPatterns,
+			write: (p, v) => {
+				p.sensitivePathPatterns = v;
+			},
+			inheritedItems: ["~/.ssh", "~/.aws", "~/.gnupg"],
+			op: { kind: "remove", index: 1 },
+		});
+		const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+		expect(parsed.sensitivePathPatterns).toEqual(["~/.ssh", "~/.gnupg"]);
+	});
+});
+
+describe("loadSettings perProjectPath=null", () => {
+	it("explicitly skips the per-project layer when null is passed", () => {
+		// The UI uses this to compute the inherited value for a project-level
+		// list edit: "what does this field look like with only defaults +
+		// user-global applied?"
+		const userPath = path.join(workdir, "user.json");
+		const projPath = path.join(workdir, ".agents/pi-auto.json");
+		writeJson(userPath, { sensitivePathPatterns: ["~/.ssh", "~/.aws"] });
+		writeJson(projPath, { sensitivePathPatterns: ["only-project"] });
+		const loaded = loadSettings({
+			defaults: DEFAULTS,
+			cwd: workdir,
+			env: {} as NodeJS.ProcessEnv,
+			userGlobalPath: userPath,
+			perProjectPath: null,
+		});
+		expect(loaded.settings.sensitivePathPatterns).toEqual(["~/.ssh", "~/.aws"]);
+		expect(loaded.paths.perProject).toBeNull();
 	});
 });
 
