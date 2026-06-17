@@ -700,19 +700,34 @@ export async function runBareCommand(
 ): Promise<BareExecResult> {
 	const start = Date.now();
 	return await new Promise<BareExecResult>((resolve, reject) => {
+		// detached: true makes the bash a new process group leader on Unix, so we
+		// can SIGKILL the whole group on abort (mirrors pi's killProcessTree in
+		// @earendil-works/pi-coding-agent/dist/utils/shell.js). Without this,
+		// killing only the bash wrapper leaves long-running children (e.g.
+		// `sleep 90`) alive, so escape during the post-sandbox-denial re-run
+		// does nothing visible.
 		const child = spawn("/bin/bash", ["-lc", command], {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
+			detached: process.platform !== "win32",
 		});
 		if (signal) {
 			const onAbort = () => {
+				if (child.pid === undefined) return;
 				try {
-					child.kill("SIGTERM");
+					// Negative pid = whole process group. SIGKILL because a stuck
+					// child may ignore SIGTERM.
+					process.kill(-child.pid, "SIGKILL");
 				} catch {
-					/* ignore */
+					try {
+						process.kill(child.pid, "SIGKILL");
+					} catch {
+						/* already dead */
+					}
 				}
 			};
-			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
+			else signal.addEventListener("abort", onAbort, { once: true });
 			child.on("close", () => signal.removeEventListener("abort", onAbort));
 		}
 		let stdout = "";

@@ -23,6 +23,8 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync as fsReadFileSync, unlinkSync } from "node:fs";
 import {
 	_noiseOperationsForTest,
 	_resetNetworkAttemptsForTest,
@@ -36,6 +38,7 @@ import {
 	applyDangerousFilesPolicy,
 	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
+	runBareCommand,
 	withSandboxGitExcludes,
 } from "../extensions/sandbox.ts";
 import type { SandboxSettings } from "../extensions/types.ts";
@@ -815,6 +818,89 @@ describe("sandbox git excludes", () => {
 			else process.env.XDG_CONFIG_HOME = oldXdg;
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// Posix-only because the abort path relies on `detached: true` + process-group
+// kill. On Windows we don't set `detached`, so the test wouldn't be meaningful.
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("runBareCommand abort propagation", () => {
+	function isProcessAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async function waitForFile(filePath: string, timeoutMs: number): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (existsSync(filePath) && fsReadFileSync(filePath, "utf8").trim().length > 0) return;
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		throw new Error(`waitForFile timed out after ${timeoutMs}ms: ${filePath}`);
+	}
+
+	async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (predicate()) return;
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		throw new Error(`waitFor predicate timed out after ${timeoutMs}ms`);
+	}
+
+	// Regression: when the sandbox denied a command and the escape reviewer
+	// approved the re-run, escape during the re-run did nothing visible. Cause
+	// was a missing `detached: true` + a SIGTERM to just the bash wrapper —
+	// long-running children (e.g. `sleep`) survived. Fix kills the process
+	// group with SIGKILL. This test backstops both behaviors.
+	it("kills the whole process group when the abort signal fires mid-execution", async () => {
+		const pidFile = path.join(tmpdir(), `pi-auto-runbare-${randomUUID()}.pid`);
+		const controller = new AbortController();
+
+		const script = `sleep 30 & SLEEP_PID=$!; echo "$SLEEP_PID" > ${pidFile}; wait $SLEEP_PID`;
+		const promise = runBareCommand(script, process.cwd(), controller.signal);
+
+		try {
+			await waitForFile(pidFile, 2000);
+			const sleepPid = Number.parseInt(fsReadFileSync(pidFile, "utf8").trim(), 10);
+			expect(Number.isFinite(sleepPid) && sleepPid > 0).toBe(true);
+			expect(isProcessAlive(sleepPid)).toBe(true);
+
+			const startedAbort = Date.now();
+			controller.abort();
+			const result = await promise;
+			const elapsed = Date.now() - startedAbort;
+
+			// Didn't sit around for `sleep 30`.
+			expect(elapsed).toBeLessThan(5000);
+			// The grandchild sleep is gone (not just the bash wrapper). Allow a
+			// brief grace for the OS to reap.
+			await waitFor(() => !isProcessAlive(sleepPid), 2000);
+			expect(isProcessAlive(sleepPid)).toBe(false);
+			// bash terminated by signal, not normal exit.
+			expect(result.signal).toBeTruthy();
+		} finally {
+			try {
+				unlinkSync(pidFile);
+			} catch {
+				/* ignore */
+			}
+		}
+	});
+
+	it("exits promptly when handed an already-aborted signal", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const started = Date.now();
+		const result = await runBareCommand("sleep 30", process.cwd(), controller.signal);
+		const elapsed = Date.now() - started;
+		expect(elapsed).toBeLessThan(2000);
+		expect(result.signal).toBeTruthy();
 	});
 });
 
