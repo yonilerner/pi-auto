@@ -353,7 +353,7 @@ describe("detectSandboxDenialForCommand", () => {
 		const out = detectSandboxDenialForCommand("but status -fv", true, output, "linux");
 		expect(out.denied).toBe(true);
 		expect(out.reason).toBe("filesystem operation denied by sandbox");
-		expect(buildRetryReason(out.reason, out.annotatedOutput, [])).toContain(".gitmodules");
+		expect(buildRetryReason(out.reason, out.annotatedOutput, [], "linux")).toContain(".gitmodules");
 	});
 
 	it("does not apply the Linux mandatory-deny Permission denied heuristic on macOS", () => {
@@ -383,6 +383,7 @@ describe("detectSandboxDenialForCommand", () => {
 			"but status -fv",
 			true,
 			"Could not read '.gitmodules' file\nCaused by:\n    Permission denied (os error 13)",
+			"linux",
 		);
 
 		expect(out.denied).toBe(true);

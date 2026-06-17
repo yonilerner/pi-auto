@@ -903,6 +903,7 @@ export function buildRetryReason(
 	denialReason: string,
 	combinedOutput: string,
 	networkAttempts: NetworkAttempt[],
+	platform: NodeJS.Platform = process.platform,
 ): string {
 	// If recordingAskCallback captured one or more host attempts during this
 	// command's window, it WAS network by definition — don't gate on text
@@ -931,7 +932,7 @@ export function buildRetryReason(
 	if (fsViolation) {
 		return `Sandbox denied filesystem ${fsViolation.access} access to ${fsViolation.path} (${fsViolation.operation}).`;
 	}
-	const path = extractDeniedPathFromStderr(combinedOutput);
+	const path = extractDeniedPathFromStderr(combinedOutput, platform);
 	if (path) {
 		return `Sandbox denied filesystem access to ${path}.`;
 	}
