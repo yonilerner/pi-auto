@@ -25,17 +25,18 @@
  *      change takes effect for the current session without a relaunch.
  *
  * Out of scope for v1 (see TODO.md):
- *   - List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`,
- *     the sandbox `allowedDomains` / `deniedDomains` / `allowRead` /
- *     `denyRead` / `allowWrite` / `denyWrite` arrays). Editable via the JSON
- *     file directly.
+ *   - `extraSafeCommandPrefixes` / `sandbox.reviewOnlyCommandPrefixes` (both
+ *     `string[][]`). Need a 2D editor; JSON file only for now.
  *   - `customPolicy` (free-form prose appended to the base policy). Single-
  *     line input is the wrong shape for it; the JSON file is.
  *   - `environment` (Claude Code-style prose infrastructure overlay). Wired
  *     when we add the field — not yet in PiAutoSettings.
  *
- *   The form intentionally only handles scalar / boolean / enum fields to
- *   keep the UI predictable.
+ * List-typed `string[]` fields (`sensitivePathPatterns`, the sandbox
+ * `allow*` / `deny*` arrays, `allowedDangerousFiles`) ARE supported, via a
+ * dedicated add/remove list view. The per-project layer follows the
+ * "copy inherited items on first add" rule from `nextArrayForAppend` so a
+ * first per-project add doesn't silently clobber the inherited list.
  */
 
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
@@ -66,6 +67,7 @@ function makeSelectTheme(theme: Theme): SelectListTheme {
 import {
 	defaultPerProjectWritePath,
 	loadSettings,
+	modifySettingArrayField,
 	saveSettingField,
 	type LoadedSettings,
 } from "./settings-store.ts";
@@ -92,7 +94,7 @@ interface FieldDescriptor {
 	id: string;
 	label: string;
 	help?: string;
-	kind: "bool" | "string" | "number" | "enum";
+	kind: "bool" | "string" | "number" | "enum" | "stringList";
 	enumValues?: readonly string[];
 	/** Read the current effective display value as a string. */
 	read: (settings: PiAutoSettings) => string;
@@ -103,11 +105,53 @@ interface FieldDescriptor {
 	 */
 	settingsKey: keyof PiAutoSettings;
 	/**
-	 * Given the current effective settings and a raw user-entered string,
-	 * compute the new value to persist under settingsKey. May throw to
-	 * reject the input (the message is surfaced in a notify).
+	 * For scalar fields (bool / string / number / enum): given the current
+	 * effective settings and a raw user-entered string, compute the new
+	 * value to persist under settingsKey. Unused for list-typed fields.
 	 */
-	applyChange: (settings: PiAutoSettings, raw: string) => PiAutoSettings[keyof PiAutoSettings];
+	applyChange?: (
+		settings: PiAutoSettings,
+		raw: string,
+	) => PiAutoSettings[keyof PiAutoSettings];
+	/**
+	 * For `stringList` fields: pluck the array out of effective settings (to
+	 * render the current items), out of a partial settings JSON (to know
+	 * what the file already contains for the inheritance rule), and back
+	 * into a partial (to persist). Sandbox sub-fields work fine — each
+	 * descriptor encapsulates its own path.
+	 */
+	arrayAccess?: {
+		getEffective: (settings: PiAutoSettings) => readonly string[];
+		readPartial: (partial: Partial<PiAutoSettings>) => readonly string[] | undefined;
+		writePartial: (partial: Partial<PiAutoSettings>, value: string[]) => void;
+	};
+}
+
+/**
+ * Helper: render the layer-attribution display value for a list-typed
+ * field. "(empty)" for [], otherwise "<n> items".
+ */
+function renderListSummary(items: readonly string[]): string {
+	return items.length === 0 ? "(empty)" : `${items.length} item${items.length === 1 ? "" : "s"}`;
+}
+
+/**
+ * Build the `sandbox` array-access helpers. All seven sandbox arrays share
+ * the same read/write shape; factoring this out keeps the descriptor table
+ * below readable.
+ */
+function sandboxArrayAccess<K extends keyof SandboxSettings>(key: K): {
+	getEffective: (s: PiAutoSettings) => readonly string[];
+	readPartial: (p: Partial<PiAutoSettings>) => readonly string[] | undefined;
+	writePartial: (p: Partial<PiAutoSettings>, v: string[]) => void;
+} {
+	return {
+		getEffective: (s) => s.sandbox[key] as readonly string[],
+		readPartial: (p) => p.sandbox?.[key] as readonly string[] | undefined,
+		writePartial: (p, v) => {
+			p.sandbox = { ...(p.sandbox ?? {}), [key]: v } as PiAutoSettings["sandbox"];
+		},
+	};
 }
 
 const FIELDS: FieldDescriptor[] = [
@@ -303,6 +347,88 @@ const FIELDS: FieldDescriptor[] = [
 		settingsKey: "sandbox",
 		read: (s) => String(s.sandbox.annotateBashDisplay),
 		applyChange: (s, raw) => ({ ...s.sandbox, annotateBashDisplay: parseBool(raw) }),
+	},
+
+	// ---- string[] list fields ---------------------------------------
+	// Edited via the dedicated list view (add/remove). The per-project layer
+	// follows the copy-inherited-on-first-add rule from nextArrayForAppend.
+	{
+		id: "sensitivePathPatterns",
+		label: "Sensitive path patterns",
+		help: "Substring patterns whose reads are reviewed even inside cwd.",
+		kind: "stringList",
+		settingsKey: "sensitivePathPatterns",
+		read: (s) => renderListSummary(s.sensitivePathPatterns),
+		arrayAccess: {
+			getEffective: (s) => s.sensitivePathPatterns,
+			readPartial: (p) => p.sensitivePathPatterns,
+			writePartial: (p, v) => {
+				p.sensitivePathPatterns = v;
+			},
+		},
+	},
+	{
+		id: "sandbox.allowedDomains",
+		label: "Sandbox: allowed domains",
+		help: "Network destinations the sandbox may reach. `*.example.com` wildcards OK.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.allowedDomains),
+		arrayAccess: sandboxArrayAccess("allowedDomains"),
+	},
+	{
+		id: "sandbox.deniedDomains",
+		label: "Sandbox: denied domains",
+		help: "Hard-deny network destinations. Checked before allowedDomains.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.deniedDomains),
+		arrayAccess: sandboxArrayAccess("deniedDomains"),
+	},
+	{
+		id: "sandbox.allowRead",
+		label: "Sandbox: allow read",
+		help: "Extra filesystem paths the sandbox may read.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.allowRead),
+		arrayAccess: sandboxArrayAccess("allowRead"),
+	},
+	{
+		id: "sandbox.denyRead",
+		label: "Sandbox: deny read",
+		help: "Extra filesystem paths the sandbox is forbidden from reading.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.denyRead),
+		arrayAccess: sandboxArrayAccess("denyRead"),
+	},
+	{
+		id: "sandbox.allowWrite",
+		label: "Sandbox: allow write",
+		help: "Filesystem paths the sandbox may write. Default `.` = workspace.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.allowWrite),
+		arrayAccess: sandboxArrayAccess("allowWrite"),
+	},
+	{
+		id: "sandbox.denyWrite",
+		label: "Sandbox: deny write",
+		help: "Hard-deny filesystem write paths even inside allowWrite roots.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.denyWrite),
+		arrayAccess: sandboxArrayAccess("denyWrite"),
+	},
+	{
+		id: "sandbox.allowedDangerousFiles",
+		label: "Sandbox: allowed dangerous files",
+		help: "ASRT DANGEROUS_FILES entries to drop (e.g. .gitmodules). Read the type doc first.",
+		kind: "stringList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.allowedDangerousFiles),
+		arrayAccess: sandboxArrayAccess("allowedDangerousFiles"),
 	},
 ];
 
@@ -588,6 +714,10 @@ async function editField(
 	field: FieldDescriptor,
 	deps: SettingsUIDeps,
 ): Promise<"saved" | "cancelled"> {
+	if (field.kind === "stringList") {
+		return await editListField(ctx, layer, field, deps);
+	}
+
 	const settings = deps.getSettings();
 	let rawInput: string | null;
 
@@ -601,6 +731,14 @@ async function editField(
 	}
 
 	if (rawInput === null) return "cancelled";
+
+	if (!field.applyChange) {
+		ctx.ui.notify(
+			`pi-auto settings: internal error — field ${field.id} has no applyChange handler`,
+			"warning",
+		);
+		return "cancelled";
+	}
 
 	let nextValue: PiAutoSettings[keyof PiAutoSettings];
 	try {
@@ -632,6 +770,291 @@ async function editField(
 		"info",
 	);
 	return "saved";
+}
+
+/* -------- step 3b: per-field list editor (stringList) -------- */
+
+/**
+ * Inheritance for list-typed per-project edits: "the value of this array
+ * with everything BUT the per-project layer applied." Used by the copy-on-
+ * first-add behavior — if the user has never set this array project-level,
+ * adding an item should preserve all the user-global / default entries they
+ * currently see in the UI rather than collapse the list to one item.
+ *
+ * For user-global edits the inherited value is the compiled-in default for
+ * this field, which we compute by loading with both files skipped.
+ */
+export function computeInheritedListItems(
+	ctx: ExtensionContext,
+	layer: EditableLayer,
+	field: FieldDescriptor,
+	deps: SettingsUIDeps,
+): readonly string[] {
+	if (!field.arrayAccess) return [];
+	if (layer === "per-project") {
+		// Inherited = defaults + user-global, no per-project.
+		const inherited = loadSettings({
+			defaults: deps.defaults,
+			cwd: ctx.cwd,
+			perProjectPath: null,
+		});
+		return field.arrayAccess.getEffective(inherited.settings);
+	}
+	// user-global — inherited is just the compiled-in defaults.
+	return field.arrayAccess.getEffective(deps.defaults);
+}
+
+async function editListField(
+	ctx: ExtensionContext,
+	layer: EditableLayer,
+	field: FieldDescriptor,
+	deps: SettingsUIDeps,
+): Promise<"saved" | "cancelled"> {
+	if (!field.arrayAccess) {
+		ctx.ui.notify(
+			`pi-auto settings: internal error — stringList field ${field.id} has no arrayAccess`,
+			"warning",
+		);
+		return "cancelled";
+	}
+
+	const filePath = resolveLayerWritePath(ctx, layer, deps);
+	if (!filePath) {
+		ctx.ui.notify(
+			`pi-auto settings: could not resolve a write path for ${layer}. Aborting.`,
+			"warning",
+		);
+		return "cancelled";
+	}
+
+	let anySaved = false;
+	let selectedIndex = 0;
+	for (;;) {
+		const settings = deps.getSettings();
+		const items = [...field.arrayAccess.getEffective(settings)];
+		const inheritedItems = computeInheritedListItems(ctx, layer, field, deps);
+		const action = await listEditorView(ctx, {
+			field,
+			layer,
+			items,
+			inheritedItems,
+			initialIndex: selectedIndex,
+		});
+		if (action.kind === "close") {
+			return anySaved ? "saved" : "cancelled";
+		}
+		if (action.kind === "add") {
+			const newItem = await promptInputRaw(ctx, {
+				title: `${field.label}: add item`,
+				help: field.help,
+				initial: "",
+			});
+			if (newItem === null || newItem.trim().length === 0) continue;
+			try {
+				const { written } = modifySettingArrayField({
+					filePath,
+					read: field.arrayAccess.readPartial,
+					write: field.arrayAccess.writePartial,
+					inheritedItems,
+					op: { kind: "append", item: newItem.trim() },
+				});
+				anySaved = true;
+				selectedIndex = Math.max(0, written.length - 1);
+				ctx.ui.notify(
+					formatSavedSettingNotification(
+						`${field.label}: added "${newItem.trim()}"`,
+						renderListSummary(written),
+						layer,
+						filePath,
+					),
+					"info",
+				);
+				await reloadAndApplySettings(ctx, deps);
+			} catch (err) {
+				ctx.ui.notify(
+					`pi-auto settings: write failed — ${(err as Error).message}`,
+					"warning",
+				);
+			}
+			continue;
+		}
+		if (action.kind === "remove") {
+			const removed = items[action.index];
+			try {
+				const { written } = modifySettingArrayField({
+					filePath,
+					read: field.arrayAccess.readPartial,
+					write: field.arrayAccess.writePartial,
+					inheritedItems,
+					op: { kind: "remove", index: action.index },
+				});
+				anySaved = true;
+				selectedIndex = Math.min(action.index, Math.max(0, written.length - 1));
+				ctx.ui.notify(
+					formatSavedSettingNotification(
+						`${field.label}: removed "${removed}"`,
+						renderListSummary(written),
+						layer,
+						filePath,
+					),
+					"info",
+				);
+				await reloadAndApplySettings(ctx, deps);
+			} catch (err) {
+				ctx.ui.notify(
+					`pi-auto settings: write failed — ${(err as Error).message}`,
+					"warning",
+				);
+			}
+		}
+	}
+}
+
+type ListEditorAction =
+	| { kind: "close" }
+	| { kind: "add" }
+	| { kind: "remove"; index: number };
+
+async function listEditorView(
+	ctx: ExtensionContext,
+	args: {
+		field: FieldDescriptor;
+		layer: EditableLayer;
+		items: readonly string[];
+		inheritedItems: readonly string[];
+		initialIndex: number;
+	},
+): Promise<ListEditorAction> {
+	const { field, layer, items, inheritedItems, initialIndex } = args;
+	// The list view always renders at least one row so the SelectList has
+	// something to navigate; if the field is empty we show a sentinel "(no
+	// items — press `a` to add)" row. The sentinel value is filtered out of
+	// the remove path.
+	const EMPTY_SENTINEL = "__pi_auto_empty_sentinel__";
+	const rows: SelectItem[] =
+		items.length === 0
+			? [{ value: EMPTY_SENTINEL, label: "(no items — press `a` to add)" }]
+			: items.map((item, i) => ({
+					value: `${i}`,
+					label: item,
+				}));
+	return await ctx.ui.custom<ListEditorAction>((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(
+			new Text(
+				theme.fg("accent", theme.bold(`${field.label} — editing ${layer}`)),
+				1,
+				0,
+			),
+		);
+		if (field.help) {
+			container.addChild(new Text(theme.fg("muted", field.help), 1, 0));
+		}
+		// Inheritance note: shown when editing a layer that will pull from a
+		// non-empty inherited value AND the user hasn't yet overridden the
+		// array project-level. This is the actual mental-model contract we
+		// want users to see in the UI: "a first add will start from these."
+		if (
+			layer === "per-project" &&
+			inheritedItems.length > 0 &&
+			items.length === inheritedItems.length &&
+			items.every((v, i) => v === inheritedItems[i])
+		) {
+			container.addChild(
+				new Text(
+					theme.fg(
+						"muted",
+						`(inheriting ${inheritedItems.length} item${inheritedItems.length === 1 ? "" : "s"} from lower layers — first edit copies them)`,
+					),
+					1,
+					0,
+				),
+			);
+		}
+		const list = new SelectList(rows, Math.min(rows.length, 14), makeSelectTheme(theme));
+		list.setSelectedIndex(Math.min(initialIndex, Math.max(0, rows.length - 1)));
+		list.onCancel = () => done({ kind: "close" });
+		// Pressing enter on a row removes it (after sentinel check). This is
+		// the same convention we use for the field-picker: enter = act on row.
+		list.onSelect = (item) => {
+			if (item.value === EMPTY_SENTINEL) {
+				done({ kind: "add" });
+				return;
+			}
+			const idx = Number.parseInt(item.value, 10);
+			if (Number.isFinite(idx)) done({ kind: "remove", index: idx });
+		};
+		container.addChild(list);
+		container.addChild(
+			new Text(
+				theme.fg("dim", "a add • d/x/del remove • enter remove • esc back"),
+				1,
+				0,
+			),
+		);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data) => {
+				// Custom keys for list operations. Anything we don't claim falls
+				// through to SelectList (arrow keys, enter, esc).
+				if (data === "a" || data === "+") {
+					done({ kind: "add" });
+					return;
+				}
+				if (data === "d" || data === "x" || data === "\x7f" || data === "\x1b[3~") {
+					const sel = list.getSelectedItem();
+					if (sel && sel.value !== EMPTY_SENTINEL) {
+						const idx = Number.parseInt(sel.value, 10);
+						if (Number.isFinite(idx)) {
+							done({ kind: "remove", index: idx });
+							return;
+						}
+					}
+					return;
+				}
+				list.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
+/**
+ * Like `promptInput` but takes a free-form title/help instead of a
+ * FieldDescriptor — used for list "add item" prompts where the descriptor's
+ * label is the parent field name, not the input prompt.
+ */
+async function promptInputRaw(
+	ctx: ExtensionContext,
+	args: { title: string; help?: string; initial: string },
+): Promise<string | null> {
+	return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold(args.title)), 1, 0));
+		if (args.help) {
+			container.addChild(new Text(theme.fg("muted", args.help), 1, 0));
+		}
+		const input = new Input();
+		input.setValue(args.initial);
+		input.focused = true;
+		input.onSubmit = (value) => done(value);
+		input.onEscape = () => done(null);
+		container.addChild(input);
+		container.addChild(new Text(theme.fg("dim", "enter save • esc cancel"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		return {
+			render: (w) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data) => {
+				input.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
 }
 
 async function pickFromList(

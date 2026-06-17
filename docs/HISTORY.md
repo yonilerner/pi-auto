@@ -613,6 +613,53 @@ tracking intentionally ignored files. The `.gitmodules` / mandatory-deny
 `Permission denied` heuristic is likewise Linux-only; macOS uses Seatbelt
 rather than the bubblewrap mount-point strategy.
 
+### List-field editing with copy-on-first-add inheritance
+
+The initial `/pi-auto-settings` UI explicitly skipped list-typed fields
+(`sensitivePathPatterns`, the seven sandbox `allow*` / `deny*` arrays,
+`allowedDangerousFiles`) on the grounds that a single-line input was the
+wrong shape for them. The remaining gap was that list fields could only
+be edited by hand-writing the JSON file, and worse, the obvious naive
+UI — "add an item to the project-level array" — would silently clobber
+the user-global value: layered settings replace arrays rather than
+concatenate them, so the first project-level write of `[newItem]`
+shadows every inherited entry.
+
+Added `nextArrayForAppend(currentInFile, inheritedItems, item)` and
+`nextArrayForRemove(currentInFile, inheritedItems, index)` in
+`extensions/settings-store.ts` as pure functions, plus
+`modifySettingArrayField({ filePath, read, write, inheritedItems, op })`
+that composes them with the partial-merge file IO. Rule: if the file
+has no entry for the field, materialize the inherited list before
+applying the op. If the file already has an explicit array (even an
+empty one), treat it as an intentional override and operate on that.
+The empty-array case is deliberately distinguished from `undefined`
+so users who want to reset a field can still do so by manually writing
+`[]` to the project JSON.
+
+Inherited items are computed by re-loading settings with the layer
+being edited explicitly skipped — added `perProjectPath: null` to
+`loadSettings` for that case. For user-global edits the inherited
+value is just the compiled-in `DEFAULT_SETTINGS`.
+
+UI: `editListField` in `extensions/settings-ui.ts` opens a `SelectList`
+of the effective items, with `a`/`+` to add, `d`/`x`/`del` or enter on
+a row to remove, and esc to return to the field picker. When the
+per-project layer hasn't overridden the field yet AND the inherited
+list is non-empty, a muted hint reads `(inheriting N items from lower
+layers — first edit copies them)`. Save and refresh happen after every
+add/remove; the field picker shows the new item count when you return.
+
+`string[][]` fields (`extraSafeCommandPrefixes`,
+`sandbox.reviewOnlyCommandPrefixes`) stay JSON-only — they need a 2D
+editor that's out of scope for this change. See TODO.md.
+
+No measurable change to reviewer behavior; this is configuration UX.
+Unit coverage in `tests/settings-store.test.ts` includes the file-unset
+vs. file-empty distinction, sandbox sub-field merges that must not
+drop sibling sandbox keys, and the `perProjectPath: null` skip used
+to compute the inherited value.
+
 ### Reviewer-gated unsandboxed command prefixes
 
 Added `sandbox.reviewOnlyCommandPrefixes`, a list of bash argv prefixes
