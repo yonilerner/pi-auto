@@ -193,6 +193,7 @@ export function buildSandboxRuntimeConfig(
 		network: {
 			allowedDomains: settings.allowedDomains,
 			deniedDomains: settings.deniedDomains,
+			disableDefaultNoProxy: settings.disableDefaultNoProxy,
 		},
 		filesystem: {
 			allowRead: settings.allowRead,

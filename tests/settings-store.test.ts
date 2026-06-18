@@ -37,6 +37,7 @@ const DEFAULTS: PiAutoSettings = {
 		mode: "off",
 		allowedDomains: [],
 		deniedDomains: [],
+		disableDefaultNoProxy: false,
 		allowRead: [],
 		denyRead: [],
 		allowWrite: ["."],
@@ -236,6 +237,7 @@ describe("loadSettings", () => {
 		expect(loaded.settings.sandbox.mode).toBe("escape-only");
 		expect(loaded.settings.sandbox.deniedDomains).toEqual(["evil.example.com"]);
 		expect(loaded.settings.sandbox.allowedDomains).toEqual([]); // default preserved
+		expect(loaded.settings.sandbox.disableDefaultNoProxy).toBe(false); // default preserved
 		expect(loaded.settings.sandbox.showStatusIndicator).toBe(true); // default preserved
 	});
 
@@ -341,6 +343,7 @@ describe("saveSettingField", () => {
 				mode: "escape-only",
 				allowedDomains: ["api.github.com"],
 				deniedDomains: [],
+				disableDefaultNoProxy: false,
 				allowRead: [],
 				denyRead: [],
 				allowWrite: [],

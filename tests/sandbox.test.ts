@@ -48,6 +48,7 @@ function makeSettings(overrides: Partial<SandboxSettings> = {}): SandboxSettings
 		mode: "escape-only",
 		allowedDomains: [],
 		deniedDomains: [],
+		disableDefaultNoProxy: false,
 		allowRead: [],
 		denyRead: [],
 		allowWrite: [],
@@ -104,6 +105,14 @@ describe("buildSandboxRuntimeConfig", () => {
 		);
 		expect(cfg.network?.allowedDomains).toEqual(["github.com", "*.npmjs.org"]);
 		expect(cfg.network?.deniedDomains).toEqual(["evil.example.com"]);
+	});
+
+	it("passes disableDefaultNoProxy through to the runtime network config", () => {
+		const cfg = buildSandboxRuntimeConfig(
+			makeSettings({ disableDefaultNoProxy: true }),
+			"/home/me/project",
+		);
+		expect(cfg.network?.disableDefaultNoProxy).toBe(true);
 	});
 });
 

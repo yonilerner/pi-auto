@@ -94,6 +94,7 @@ const DEFAULT_SETTINGS: PiAutoSettings = {
 		mode: "escape-only",
 		allowedDomains: [],
 		deniedDomains: [],
+		disableDefaultNoProxy: false,
 		allowRead: [],
 		denyRead: [],
 		allowWrite: ["."],
@@ -635,7 +636,7 @@ export default function (pi: ExtensionAPI): void {
 		description: "Show pi-auto sandbox status, current config, and recent denials",
 		handler: async (_args, ctx) => {
 			const s = settings.sandbox;
-		const formatStringList = (items: readonly string[], empty: string) =>
+			const formatStringList = (items: readonly string[], empty: string) =>
 				items.length ? items.join(", ") : empty;
 			const formatCommandPrefixes = (prefixes: readonly (readonly string[])[]) =>
 				prefixes.length ? prefixes.map((prefix) => prefix.join(" ")).join(", ") : "(none)";
@@ -651,8 +652,9 @@ export default function (pi: ExtensionAPI): void {
 				`  sandbox.reviewOnlyCommandPrefixes:    ${formatCommandPrefixes(s.reviewOnlyCommandPrefixes)}`,
 				``,
 				`network:`,
-				`  allowed domains: ${formatStringList(s.allowedDomains, "(none — no network)")}`,
-				`  denied domains:  ${formatStringList(s.deniedDomains, "(none)")}`,
+				`  allowed domains:          ${formatStringList(s.allowedDomains, "(none — no network)")}`,
+				`  denied domains:           ${formatStringList(s.deniedDomains, "(none)")}`,
+				`  disable default NO_PROXY: ${s.disableDefaultNoProxy}`,
 				`filesystem:`,
 				`  allow read:      ${formatStringList(s.allowRead, "(runtime defaults)")}`,
 				`  deny read:       ${formatStringList(s.denyRead, "(none)")}`,

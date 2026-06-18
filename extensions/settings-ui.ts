@@ -289,6 +289,15 @@ const FIELDS: FieldDescriptor[] = [
 		},
 	},
 	{
+		id: "sandbox.disableDefaultNoProxy",
+		label: "Sandbox: disable default NO_PROXY",
+		help: "Do not inject ASRT's default NO_PROXY/no_proxy bypass for loopback, .local, link-local, and private ranges.",
+		kind: "bool",
+		settingsKey: "sandbox",
+		read: (s) => String(s.sandbox.disableDefaultNoProxy),
+		applyChange: (s, raw) => ({ ...s.sandbox, disableDefaultNoProxy: parseBool(raw) }),
+	},
+	{
 		id: "sandbox.showStatusIndicator",
 		label: "Sandbox: status-bar indicator",
 		kind: "bool",
