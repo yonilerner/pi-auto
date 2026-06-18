@@ -51,7 +51,7 @@ export type NoticeLevel = "silent" | "denials" | "normal" | "verbose";
 export type SandboxMode = "off" | "escape-only" | "review-then-escape";
 
 /**
- * Subset of `@anthropic-ai/sandbox-runtime`'s SandboxRuntimeConfig that we
+ * Subset of `@foxfirecodes/sandbox-runtime`'s SandboxRuntimeConfig that we
  * expose through PiAutoSettings. We intentionally only surface the fields
  * that are routinely tuned per-project; everything else is left to the
  * runtime defaults. The settings object is mapped into a full
@@ -104,7 +104,7 @@ export interface SandboxSettings {
 	 */
 	reviewOnlyCommandPrefixes: string[][];
 	/**
-	 * Filenames to drop from `@anthropic-ai/sandbox-runtime`'s hardcoded
+	 * Filenames to drop from `@foxfirecodes/sandbox-runtime`'s hardcoded
 	 * `DANGEROUS_FILES` mandatory-deny set before sandbox initialization.
 	 *
 	 * Entries must match the exact basename ASRT denies. As of this writing

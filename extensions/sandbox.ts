@@ -1,7 +1,7 @@
 /**
  * Sandbox integration for pi-auto.
  *
- * Wraps `@anthropic-ai/sandbox-runtime` (ASRT) so the rest of pi-auto can:
+ * Wraps `@foxfirecodes/sandbox-runtime` (ASRT) so the rest of pi-auto can:
  *
  *  - validate that the host supports the sandbox at session start
  *    (fail-loud if sandbox is configured but unavailable);
@@ -22,8 +22,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
-import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { DANGEROUS_FILES, getDangerousDirectories } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { SandboxManager, type SandboxRuntimeConfig } from "@foxfirecodes/sandbox-runtime";
+import { DANGEROUS_FILES, getDangerousDirectories } from "@foxfirecodes/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 /**
  * Mutable view of ASRT's `DANGEROUS_FILES` export. The runtime declares it
@@ -141,7 +141,7 @@ export function checkSandboxAvailability(settings: SandboxSettings): SandboxAvai
 			supportedPlatform: false,
 			errors: [
 				`OS sandbox is not supported on this platform. ` +
-					`Windows is currently unsupported by @anthropic-ai/sandbox-runtime; ` +
+					`Windows is currently unsupported by @foxfirecodes/sandbox-runtime; ` +
 					`macOS and Linux are supported. ` +
 					`Set sandbox.mode = "off" in pi-auto settings to silence this.`,
 			],

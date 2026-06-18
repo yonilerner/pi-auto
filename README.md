@@ -159,7 +159,7 @@ Which tool calls get reviewed at all, and what policy text the reviewer sees.
 | Setting | Default | What it does |
 | ------- | ------- | ------------ |
 | `sandbox.allowWrite` | `["."]` | Filesystem write roots for sandboxed commands. The default allows the current workspace (`.`); add entries here for extra writable roots. If you override this and remove `.`, workspace writes are no longer allowed. `/tmp` is not writable by default. |
-| `sandbox.disableDefaultNoProxy` | `false` | Passes through to `@anthropic-ai/sandbox-runtime` as `network.disableDefaultNoProxy`. When `true`, the runtime does not inject default `NO_PROXY` / `no_proxy` bypasses for loopback, `.local`, link-local, and private ranges, so clients that honor proxy env vars send those destinations through the sandbox proxy. |
+| `sandbox.disableDefaultNoProxy` | `false` | Passes through to `@foxfirecodes/sandbox-runtime` as `network.disableDefaultNoProxy`. When `true`, the runtime does not inject default `NO_PROXY` / `no_proxy` bypasses for loopback, `.local`, link-local, and private ranges, so clients that honor proxy env vars send those destinations through the sandbox proxy. |
 
 ### Transcript building
 
@@ -223,7 +223,7 @@ If a command appears to invoke a review-only prefix but uses unsupported shell s
 
 ### Sandbox: silencing `DANGEROUS_FILES` deny noise
 
-`@anthropic-ai/sandbox-runtime` hardcodes a list of `DANGEROUS_FILES` (`.gitconfig`, `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`, `.mcp.json`) into its mandatory-deny set, so ASRT plants a deny-only placeholder for each at `<cwd>` for every sandboxed command. Tools that stat those paths (e.g. `git`/`but`/`gh` stat `.gitmodules` on essentially every invocation to detect submodules) then log a benign `permission denied` per command.
+`@foxfirecodes/sandbox-runtime` hardcodes a list of `DANGEROUS_FILES` (`.gitconfig`, `.gitmodules`, `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `.ripgreprc`, `.mcp.json`) into its mandatory-deny set, so ASRT plants a deny-only placeholder for each at `<cwd>` for every sandboxed command. Tools that stat those paths (e.g. `git`/`but`/`gh` stat `.gitmodules` on essentially every invocation to detect submodules) then log a benign `permission denied` per command.
 
 `sandbox.allowedDangerousFiles` is a list of basenames to remove from that deny set. Empty (default) preserves the full ASRT deny list; add entries to opt individual files back in. Example:
 
@@ -340,7 +340,7 @@ extensions/
   retrieval.ts        action-keyed retrieval over older transcript entries
   bash-parser.ts      tree-sitter-bash wrapper for the safe-command fast path
   safe-commands.ts    known-safe command classifier (port of Codex's is_safe_command)
-  sandbox.ts          OS sandbox wrapping (sandbox.mode); wraps @anthropic-ai/sandbox-runtime
+  sandbox.ts          OS sandbox wrapping (sandbox.mode); wraps @foxfirecodes/sandbox-runtime
   settings-store.ts   layered settings (defaults / user-global / per-project / env)
   settings-ui.ts      /pi-auto-settings command implementation
   types.ts            shared types (PiAutoSettings, ReviewableAction, ...)
