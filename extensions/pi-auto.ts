@@ -635,6 +635,10 @@ export default function (pi: ExtensionAPI): void {
 		description: "Show pi-auto sandbox status, current config, and recent denials",
 		handler: async (_args, ctx) => {
 			const s = settings.sandbox;
+		const formatStringList = (items: readonly string[], empty: string) =>
+				items.length ? items.join(", ") : empty;
+			const formatCommandPrefixes = (prefixes: readonly (readonly string[])[]) =>
+				prefixes.length ? prefixes.map((prefix) => prefix.join(" ")).join(", ") : "(none)";
 			const lines = [
 				`pi-auto sandbox: mode = ${s.mode}`,
 				``,
@@ -642,14 +646,19 @@ export default function (pi: ExtensionAPI): void {
 					sandboxState.current.kind === "broken" ? ` (${sandboxState.current.reason})` : ""
 				}`,
 				``,
+				`command routing:`,
+				`  extraSafeCommandPrefixes:              ${formatCommandPrefixes(settings.extraSafeCommandPrefixes)}`,
+				`  sandbox.reviewOnlyCommandPrefixes:    ${formatCommandPrefixes(s.reviewOnlyCommandPrefixes)}`,
+				``,
 				`network:`,
-				`  allowed domains: ${s.allowedDomains.length ? s.allowedDomains.join(", ") : "(none — no network)"}`,
-				`  denied domains:  ${s.deniedDomains.length ? s.deniedDomains.join(", ") : "(none)"}`,
+				`  allowed domains: ${formatStringList(s.allowedDomains, "(none — no network)")}`,
+				`  denied domains:  ${formatStringList(s.deniedDomains, "(none)")}`,
 				`filesystem:`,
-				`  allow read:      ${s.allowRead.length ? s.allowRead.join(", ") : "(runtime defaults)"}`,
-				`  deny read:       ${s.denyRead.length ? s.denyRead.join(", ") : "(none)"}`,
-				`  allow write:     ${s.allowWrite.length ? s.allowWrite.join(", ") : "(none)"}`,
-				`  deny write:      ${s.denyWrite.length ? s.denyWrite.join(", ") : "(none)"}`,
+				`  allow read:      ${formatStringList(s.allowRead, "(runtime defaults)")}`,
+				`  deny read:       ${formatStringList(s.denyRead, "(none)")}`,
+				`  allow write:     ${formatStringList(s.allowWrite, "(none)")}`,
+				`  deny write:      ${formatStringList(s.denyWrite, "(none)")}`,
+				`  allowed dangerous files: ${formatStringList(s.allowedDangerousFiles, "(none)")}`,
 				`ui:`,
 				`  status indicator: ${s.showStatusIndicator}`,
 				`  annotate bash:    ${s.annotateBashDisplay}`,
