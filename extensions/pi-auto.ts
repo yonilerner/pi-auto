@@ -21,7 +21,12 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { parseLooseCommandArgvPrefixes, parseShellLcPlainCommands } from "./bash-parser.ts";
+import {
+	parseLooseCommandArgvPrefixes,
+	parseShellLcPlainCommands,
+	parseTopLevelAndOrCommandSequence,
+	type AndOrCommandSegment,
+} from "./bash-parser.ts";
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
@@ -40,7 +45,14 @@ import {
 import { decideScope } from "./scope.ts";
 import { registerSettingsCommand } from "./settings-ui.ts";
 import { loadSettings } from "./settings-store.ts";
-import type { PiAutoSettings, ReviewableAction, ReviewerAssessment, SandboxMode, SettingsLayerMap } from "./types.ts";
+import type {
+	PiAutoSettings,
+	ReviewableAction,
+	ReviewerAssessment,
+	SandboxMode,
+	SandboxSettings,
+	SettingsLayerMap,
+} from "./types.ts";
 
 const DEFAULT_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
@@ -125,6 +137,14 @@ const RISK_GLYPH: Record<ReviewerAssessment["risk_level"], string> = {
 interface WrappedBashState {
 	originalCommand: string;
 	mode: "escape-only" | "review-then-escape";
+	/**
+	 * True when pi-auto rewrote a mixed review-only/sandboxed AND/OR sequence.
+	 * If a sandboxed segment is denied, do not escape-rerun the full original
+	 * command: that would unsandbox the normal segments too.
+	 */
+	mixedReviewOnlySequence?: boolean;
+	/** Original source text for each segment that was actually wrapped with ASRT. */
+	sandboxedCommands?: string[];
 	/**
 	 * `Date.now()` captured at tool_call time. Used to scope the
 	 * ASRT-callback-captured network attempts to just this command's lifetime
@@ -341,8 +361,10 @@ export default function (pi: ExtensionAPI): void {
 		cleanupAfterSandboxCommand();
 
 		const combinedOutput = extractTextContent(event);
-		const denial = detectSandboxDenialForCommand(
-			wrap.originalCommand,
+		const denial = detectSandboxDenialForCommands(
+			wrap.sandboxedCommands && wrap.sandboxedCommands.length > 0
+				? wrap.sandboxedCommands
+				: [wrap.originalCommand],
 			event.isError,
 			combinedOutput,
 		);
@@ -361,6 +383,32 @@ export default function (pi: ExtensionAPI): void {
 		// fall back to a generic phrase.
 		const networkAttempts = getNetworkAttemptsSince(wrap.startTime);
 		const retryReason = buildRetryReason(denial.reason, evidence, networkAttempts);
+
+		if (wrap.mixedReviewOnlySequence) {
+			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
+			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
+				ctx.ui.notify(
+					`pi-auto: ${retryReason} Not retrying the mixed review-only sequence outside the sandbox.`,
+					"warning",
+				);
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text: [
+							`pi-auto sandbox blocked a sandboxed segment in this mixed review-only command sequence.`,
+							retryReason,
+							`pi-auto did not retry the full sequence outside the sandbox because that would also unsandbox non-review-only segments.`,
+							``,
+							`Sandbox output:`,
+							evidence,
+						].join("\n"),
+					},
+				],
+				isError: true,
+			};
+		}
 
 		const escapeAction: ReviewableAction = {
 			toolName: "bash",
@@ -486,6 +534,51 @@ export default function (pi: ExtensionAPI): void {
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
 			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+		}
+		if (reviewOnlyDecision.kind === "mixed-sequence") {
+			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
+			setStatus(ctx, "reviewing mixed review-only bash…");
+			const result = await reviewAction(action, ctx, settings);
+			clearStatus(ctx);
+			const gating = await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+			if (gating && gating.block === true) return gating;
+
+			const ready = await ensureSandboxReady(settings, ctx.cwd, sandboxState);
+			if (ready.kind !== "ready") {
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`pi-auto sandbox unavailable; blocking bash. Reason: ${ready.kind === "broken" ? ready.reason : "not ready"}`,
+						"warning",
+					);
+				}
+				return {
+					block: true,
+					reason: `pi-auto sandbox unavailable: ${ready.kind === "broken" ? ready.reason : "not ready"}`,
+				};
+			}
+
+			try {
+				const rewritten = await buildMixedReviewOnlySequenceCommand(
+					reviewOnlyDecision.segments,
+					ctx.cwd,
+					settings.sandbox,
+				);
+				(event.input as { command?: unknown }).command = rewritten.command;
+				wrappedBashByToolCallId.set(event.toolCallId, {
+					originalCommand,
+					mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
+					mixedReviewOnlySequence: true,
+					sandboxedCommands: rewritten.sandboxedCommands,
+					startTime: Date.now(),
+				});
+				return undefined;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (ctx.hasUI) {
+					ctx.ui.notify(`pi-auto mixed review-only sandbox wrap failed: ${msg}`, "warning");
+				}
+				return { block: true, reason: `pi-auto mixed review-only sandbox wrap failed: ${msg}` };
+			}
 		}
 		if (reviewOnlyDecision.kind === "unsupported") {
 			return { block: true, reason: reviewOnlyDecision.reason };
@@ -910,6 +1003,23 @@ function extractTextContent(event: ToolResultEvent): string {
 	return out;
 }
 
+function detectSandboxDenialForCommands(
+	commands: readonly string[],
+	isError: boolean,
+	combinedOutput: string,
+): { denied: boolean; reason: string; annotatedOutput: string } {
+	let fallback: { denied: boolean; reason: string; annotatedOutput: string } | undefined;
+	for (const command of commands) {
+		const denial = detectSandboxDenialForCommand(command, isError, combinedOutput);
+		if (!denial.denied) {
+			fallback = denial;
+			continue;
+		}
+		return denial;
+	}
+	return fallback ?? { denied: false, reason: "", annotatedOutput: combinedOutput };
+}
+
 function bashReviewAction(command: string, toolCallId: string, cwd: string): ReviewableAction {
 	return {
 		toolName: "bash",
@@ -924,8 +1034,13 @@ function bashReviewAction(command: string, toolCallId: string, cwd: string): Rev
 	};
 }
 
+interface MixedReviewOnlySegment extends AndOrCommandSegment {
+	route: "review-only" | "sandbox";
+}
+
 export type SandboxReviewOnlyPrefixDecision =
 	| { kind: "match" }
+	| { kind: "mixed-sequence"; segments: MixedReviewOnlySegment[] }
 	| { kind: "unsupported"; reason: string }
 	| { kind: "no-match" };
 
@@ -941,6 +1056,38 @@ export function decideSandboxReviewOnlyPrefix(
 	prefixes: readonly (readonly string[])[],
 ): SandboxReviewOnlyPrefixDecision {
 	if (prefixes.length === 0) return { kind: "no-match" };
+
+	const andOrSequence = parseTopLevelAndOrCommandSequence(command);
+	if (andOrSequence && andOrSequence.length > 1) {
+		const segments: MixedReviewOnlySegment[] = [];
+		let reviewOnlyCount = 0;
+		for (const segment of andOrSequence) {
+			if (segment.argv && matchesAnyCommandPrefix(segment.argv, prefixes)) {
+				segments.push({ ...segment, route: "review-only" });
+				reviewOnlyCount++;
+				continue;
+			}
+
+			const loosePrefixes = parseLooseCommandArgvPrefixes(segment.source);
+			if (loosePrefixes.some((argv) => couldMatchAnyCommandPrefix(argv, prefixes))) {
+				return {
+					kind: "unsupported",
+					reason: buildReviewOnlyUnsupportedReason(
+						prefixes,
+						command,
+						"a review-only command appears inside a segment whose shell syntax cannot be routed safely",
+					),
+				};
+			}
+
+			segments.push({ ...segment, route: "sandbox" });
+		}
+
+		if (reviewOnlyCount === segments.length) return { kind: "match" };
+		if (reviewOnlyCount > 0) return { kind: "mixed-sequence", segments };
+		return { kind: "no-match" };
+	}
+
 	const plainCommands = parseShellLcPlainCommands(["bash", "-lc", command]);
 	if (plainCommands && plainCommands.length > 0) {
 		const matched = plainCommands.filter((argv) => matchesAnyCommandPrefix(argv, prefixes));
@@ -954,6 +1101,25 @@ export function decideSandboxReviewOnlyPrefix(
 		return { kind: "unsupported", reason: buildReviewOnlyUnsupportedReason(prefixes, command, "the command uses shell syntax that review-only routing does not support") };
 	}
 	return { kind: "no-match" };
+}
+
+async function buildMixedReviewOnlySequenceCommand(
+	segments: readonly MixedReviewOnlySegment[],
+	cwd: string,
+	sandbox: SandboxSettings,
+): Promise<{ command: string; sandboxedCommands: string[] }> {
+	const out: string[] = [];
+	const sandboxedCommands: string[] = [];
+	for (const segment of segments) {
+		if (segment.operatorBefore) out.push(segment.operatorBefore);
+		if (segment.route === "review-only") {
+			out.push(segment.source);
+		} else {
+			sandboxedCommands.push(segment.source);
+			out.push(await wrapBashCommand(segment.source, cwd, sandbox));
+		}
+	}
+	return { command: out.join(" "), sandboxedCommands };
 }
 
 function buildReviewOnlyUnsupportedReason(

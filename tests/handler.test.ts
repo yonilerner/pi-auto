@@ -110,8 +110,20 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("unsupported");
 	});
 
-	it("blocks with a targeted unsupported result when only some plain commands match", () => {
-		const decision = decideSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]]);
+	it("routes top-level AND/OR sequences with both review-only and sandboxed segments", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status && ./safe-looking-script.sh || gh pr list", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(decision.segments.map((s) => ({ source: s.source, op: s.operatorBefore, route: s.route }))).toEqual([
+				{ source: "gh auth status", op: undefined, route: "review-only" },
+				{ source: "./safe-looking-script.sh", op: "&&", route: "sandbox" },
+				{ source: "gh pr list", op: "||", route: "review-only" },
+			]);
+		}
+	});
+
+	it("still blocks mixed review-only commands behind unsupported separators", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status; rm -rf /tmp/x", [["gh"]]);
 		expect(decision.kind).toBe("unsupported");
 		if (decision.kind === "unsupported") {
 			expect(decision.reason).toContain("not every command");
