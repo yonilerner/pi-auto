@@ -135,9 +135,9 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		if (decision.kind === "mixed-sequence") {
 			expect(formatMixedReviewOnlyRoutingNotice(decision.segments)).toBe([
 				"pi-auto routed mixed bash:",
-				"  review-only/bare: gh repo view --json url",
-				"  && sandboxed: ./test.sh",
-				"  || review-only/bare: gh repo view --json name",
+				"      review-only : gh repo view --json url",
+				"   && sandboxed   : ./test.sh",
+				"   || review-only : gh repo view --json name",
 			].join("\n"));
 		}
 	});

@@ -1139,9 +1139,9 @@ async function buildMixedReviewOnlySequenceCommand(
 export function formatMixedReviewOnlyRoutingNotice(segments: readonly MixedReviewOnlySegment[]): string {
 	const lines = ["pi-auto routed mixed bash:"];
 	for (const segment of segments) {
-		const route = segment.route === "review-only" ? "review-only/bare" : "sandboxed";
-		const prefix = segment.operatorBefore ? `${segment.operatorBefore} ` : "";
-		lines.push(`  ${prefix}${route}: ${truncate(segment.source, 160)}`);
+		const operator = segment.operatorBefore ?? "";
+		const route = segment.route === "review-only" ? "review-only" : "sandboxed";
+		lines.push(`   ${operator.padStart(2)} ${route.padEnd(11)} : ${truncate(segment.source, 160)}`);
 	}
 	return lines.join("\n");
 }
