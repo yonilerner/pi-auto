@@ -70,6 +70,13 @@ export interface SandboxSettings {
 	 */
 	deniedDomains: string[];
 	/**
+	 * Network: disable the runtime's default NO_PROXY/no_proxy injection for
+	 * loopback, .local, link-local, and private network ranges. Default false
+	 * preserves ASRT's bypass env vars; true sends those destinations through
+	 * the sandbox proxy for clients that honor proxy env vars.
+	 */
+	disableDefaultNoProxy: boolean;
+	/**
 	 * Filesystem: paths the sandbox may read. By default we trust the runtime's
 	 * built-in read defaults (read is allowed everywhere, then the runtime
 	 * applies its own denies for sensitive system locations).

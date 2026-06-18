@@ -159,6 +159,7 @@ Which tool calls get reviewed at all, and what policy text the reviewer sees.
 | Setting | Default | What it does |
 | ------- | ------- | ------------ |
 | `sandbox.allowWrite` | `["."]` | Filesystem write roots for sandboxed commands. The default allows the current workspace (`.`); add entries here for extra writable roots. If you override this and remove `.`, workspace writes are no longer allowed. `/tmp` is not writable by default. |
+| `sandbox.disableDefaultNoProxy` | `false` | Passes through to `@anthropic-ai/sandbox-runtime` as `network.disableDefaultNoProxy`. When `true`, the runtime does not inject default `NO_PROXY` / `no_proxy` bypasses for loopback, `.local`, link-local, and private ranges, so clients that honor proxy env vars send those destinations through the sandbox proxy. |
 
 ### Transcript building
 

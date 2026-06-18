@@ -37,7 +37,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
-		"@anthropic-ai/sandbox-runtime": "^0.0.54",
+		"@anthropic-ai/sandbox-runtime": "npm:@foxfirecodes/sandbox-runtime@foxfire",
 		"tree-sitter": "^0.25.0",
 		"tree-sitter-bash": "^0.25.1"
 	}

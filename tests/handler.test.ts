@@ -30,6 +30,7 @@ const SETTINGS: PiAutoSettings = {
 		mode: "escape-only",
 		allowedDomains: [],
 		deniedDomains: [],
+		disableDefaultNoProxy: false,
 		allowRead: [],
 		denyRead: [],
 		allowWrite: [],
