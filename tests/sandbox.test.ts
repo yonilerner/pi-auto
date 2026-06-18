@@ -21,7 +21,7 @@
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { SandboxManager } from "@foxfirecodes/sandbox-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync as fsReadFileSync, unlinkSync } from "node:fs";

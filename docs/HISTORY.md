@@ -142,8 +142,8 @@ this deployment. Kept as a setting opt-in; not default.
 ### OS-level sandbox feature (`a6a610d`)
 
 Added a `sandbox.mode` setting backed by
-[`@anthropic-ai/sandbox-runtime`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime)
-(ASRT, the public standalone of Claude Code's sandbox).
+[`@foxfirecodes/sandbox-runtime`](https://www.npmjs.com/package/@foxfirecodes/sandbox-runtime)
+(ASRT, the sandbox runtime used by pi-auto).
 
 Three modes:
 

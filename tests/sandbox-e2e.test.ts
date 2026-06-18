@@ -2,7 +2,7 @@
  * Sandbox runtime end-to-end probe.
  *
  * Opt-in: only runs when `PI_AUTO_SANDBOX_E2E=1`. The point of this suite is
- * to take the entire stack we wrote on top of @anthropic-ai/sandbox-runtime
+ * to take the entire stack we wrote on top of @foxfirecodes/sandbox-runtime
  * (the recordingAskCallback, the violation-store reader, the textual
  * fallback, buildRetryReason) and exercise it against the actual sandbox
  * with real subprocess execution. The output is the ground truth for what
@@ -45,7 +45,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import { SandboxManager } from "@foxfirecodes/sandbox-runtime";
 import {
 	_recordingAskCallbackForTest,
 	_resetNetworkAttemptsForTest,
