@@ -646,6 +646,9 @@ chains: if a wrapped segment is denied, pi-auto reports the sandbox
 failure and does not use the normal escape path to rerun the original
 chain bare. Escaping the whole original chain would recreate the hole the
 split was meant to avoid (`<review-only> && ./safe-looking-script.sh`).
+A normal-level routing notice lists each segment as `review-only/bare` or
+`sandboxed` so the single reviewer approval is visibly paired with the
+per-segment execution route.
 
 ## Open work
 

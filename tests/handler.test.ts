@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
-import { decideSandboxReviewOnlyPrefix, fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
+import {
+	decideSandboxReviewOnlyPrefix,
+	fallbackToUser,
+	formatMixedReviewOnlyRoutingNotice,
+	handleCircuitBreaker,
+	handleReviewResult,
+	matchesSandboxReviewOnlyPrefix,
+} from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
@@ -119,6 +126,20 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 				{ source: "./safe-looking-script.sh", op: "&&", route: "sandbox" },
 				{ source: "gh pr list", op: "||", route: "review-only" },
 			]);
+		}
+	});
+
+	it("formats a routing notice for mixed review-only sequences", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh repo view --json url && ./test.sh || gh repo view --json name", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(formatMixedReviewOnlyRoutingNotice(decision.segments)).toBe([
+				"pi-auto routed mixed bash:",
+				"  review-only/bare: gh repo view --json url",
+				"  && sandboxed: ./test.sh",
+				"  || review-only/bare: gh repo view --json name",
+				"  sandbox escape: sandboxed segments will not rerun the whole chain bare",
+			].join("\n"));
 		}
 	});
 

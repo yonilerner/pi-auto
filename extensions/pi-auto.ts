@@ -571,6 +571,9 @@ export default function (pi: ExtensionAPI): void {
 					sandboxedCommands: rewritten.sandboxedCommands,
 					startTime: Date.now(),
 				});
+				if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
+					ctx.ui.notify(formatMixedReviewOnlyRoutingNotice(reviewOnlyDecision.segments), "info");
+				}
 				return undefined;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -1034,7 +1037,7 @@ function bashReviewAction(command: string, toolCallId: string, cwd: string): Rev
 	};
 }
 
-interface MixedReviewOnlySegment extends AndOrCommandSegment {
+export interface MixedReviewOnlySegment extends AndOrCommandSegment {
 	route: "review-only" | "sandbox";
 }
 
@@ -1120,6 +1123,17 @@ async function buildMixedReviewOnlySequenceCommand(
 		}
 	}
 	return { command: out.join(" "), sandboxedCommands };
+}
+
+export function formatMixedReviewOnlyRoutingNotice(segments: readonly MixedReviewOnlySegment[]): string {
+	const lines = ["pi-auto routed mixed bash:"];
+	for (const segment of segments) {
+		const route = segment.route === "review-only" ? "review-only/bare" : "sandboxed";
+		const prefix = segment.operatorBefore ? `${segment.operatorBefore} ` : "";
+		lines.push(`  ${prefix}${route}: ${truncate(segment.source, 160)}`);
+	}
+	lines.push("  sandbox escape: sandboxed segments will not rerun the whole chain bare");
+	return lines.join("\n");
 }
 
 function buildReviewOnlyUnsupportedReason(
