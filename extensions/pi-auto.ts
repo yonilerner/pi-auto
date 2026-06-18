@@ -540,18 +540,21 @@ export default function (pi: ExtensionAPI): void {
 			setStatus(ctx, "reviewing mixed review-only bash…");
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
-			if (
-				result.kind === "assessed" &&
-				result.assessment.outcome === "allow" &&
-				ctx.hasUI &&
-				shouldNotify(settings.noticeLevel, "normal")
-			) {
-				// Show routing before the reviewer allow notice, so the final notice
-				// still carries the reviewer's risk/auth/rationale summary.
-				ctx.ui.notify(formatMixedReviewOnlyRoutingNotice(reviewOnlyDecision.segments), "info");
+			if (result.kind === "assessed" && result.assessment.outcome === "allow") {
+				breaker.recordNonDenial(currentTurnId);
+				if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
+					ctx.ui.notify(
+						[
+							formatMixedReviewOnlyRoutingNotice(reviewOnlyDecision.segments),
+							formatReviewerAllowNotice(result.assessment),
+						].join("\n\n"),
+						"info",
+					);
+				}
+			} else {
+				const gating = await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+				if (gating && gating.block === true) return gating;
 			}
-			const gating = await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
-			if (gating && gating.block === true) return gating;
 
 			const ready = await ensureSandboxReady(settings, ctx.cwd, sandboxState);
 			if (ready.kind !== "ready") {
@@ -840,11 +843,7 @@ export async function handleReviewResult(
 	if (assessment.outcome === "allow") {
 		breaker.recordNonDenial(turnId);
 		if (shouldNotify(settings.noticeLevel, "normal") && ctx.hasUI) {
-			const glyph = RISK_GLYPH[assessment.risk_level];
-			ctx.ui.notify(
-				`pi-auto ${glyph} allowed (${assessment.risk_level} risk, auth=${assessment.user_authorization}): ${assessment.rationale}`,
-				"info",
-			);
+			ctx.ui.notify(formatReviewerAllowNotice(assessment), "info");
 		}
 		return undefined;
 	}
@@ -866,6 +865,11 @@ export async function handleReviewResult(
 		);
 	}
 	return { block: true, reason: denyReason };
+}
+
+function formatReviewerAllowNotice(assessment: ReviewerAssessment): string {
+	const glyph = RISK_GLYPH[assessment.risk_level];
+	return `pi-auto ${glyph} allowed (${assessment.risk_level} risk, auth=${assessment.user_authorization}): ${assessment.rationale}`;
 }
 
 export async function fallbackToUser(
