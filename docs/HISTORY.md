@@ -630,6 +630,26 @@ instead of silently falling back to sandbox execution. This preserves the
 "review-only means do not sandbox" contract without treating complex
 shell constructs as safe to route.
 
+### Mixed `&&` / `||` review-only sequences
+
+Prototyped segment routing for top-level AND/OR chains that include a
+`sandbox.reviewOnlyCommandPrefixes` command. pi-auto now reviews the
+original chain once, leaves matching review-only segments bare, and wraps
+non-matching segments individually in ASRT, so `gh auth status && ./test`
+can run without unsandboxing `./test`. Unsupported separators (`;`, `|`)
+and review-only commands hidden behind env prefixes, redirects,
+substitutions, or control-flow nodes still block with the targeted
+review-only syntax error.
+
+Sandbox-denial handling is intentionally fail-closed for these mixed
+chains: if a wrapped segment is denied, pi-auto reports the sandbox
+failure and does not use the normal escape path to rerun the original
+chain bare. Escaping the whole original chain would recreate the hole the
+split was meant to avoid (`<review-only> && ./safe-looking-script.sh`).
+A normal-level routing notice lists each segment as `review-only/bare` or
+`sandboxed` so the single reviewer approval is visibly paired with the
+per-segment execution route.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).

@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
-import { decideSandboxReviewOnlyPrefix, fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
+import {
+	decideSandboxReviewOnlyPrefix,
+	fallbackToUser,
+	formatMixedReviewOnlyRoutingNotice,
+	handleCircuitBreaker,
+	handleReviewResult,
+	matchesSandboxReviewOnlyPrefix,
+} from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
@@ -111,8 +118,33 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("unsupported");
 	});
 
-	it("blocks with a targeted unsupported result when only some plain commands match", () => {
-		const decision = decideSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]]);
+	it("routes top-level AND/OR sequences with both review-only and sandboxed segments", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status && ./safe-looking-script.sh || gh pr list", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(decision.segments.map((s) => ({ source: s.source, op: s.operatorBefore, route: s.route }))).toEqual([
+				{ source: "gh auth status", op: undefined, route: "review-only" },
+				{ source: "./safe-looking-script.sh", op: "&&", route: "sandbox" },
+				{ source: "gh pr list", op: "||", route: "review-only" },
+			]);
+		}
+	});
+
+	it("formats a routing notice for mixed review-only sequences", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh repo view --json url && ./test.sh || gh repo view --json name", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(formatMixedReviewOnlyRoutingNotice(decision.segments)).toBe([
+				"pi-auto routed mixed bash:",
+				"      review-only : gh repo view --json url",
+				"   && sandboxed   : ./test.sh",
+				"   || review-only : gh repo view --json name",
+			].join("\n"));
+		}
+	});
+
+	it("still blocks mixed review-only commands behind unsupported separators", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status; rm -rf /tmp/x", [["gh"]]);
 		expect(decision.kind).toBe("unsupported");
 		if (decision.kind === "unsupported") {
 			expect(decision.reason).toContain("not every command");
