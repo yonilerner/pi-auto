@@ -138,7 +138,6 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 				"  review-only/bare: gh repo view --json url",
 				"  && sandboxed: ./test.sh",
 				"  || review-only/bare: gh repo view --json name",
-				"  sandbox escape: sandboxed segments will not rerun the whole chain bare",
 			].join("\n"));
 		}
 	});

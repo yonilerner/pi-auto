@@ -540,6 +540,16 @@ export default function (pi: ExtensionAPI): void {
 			setStatus(ctx, "reviewing mixed review-only bash…");
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
+			if (
+				result.kind === "assessed" &&
+				result.assessment.outcome === "allow" &&
+				ctx.hasUI &&
+				shouldNotify(settings.noticeLevel, "normal")
+			) {
+				// Show routing before the reviewer allow notice, so the final notice
+				// still carries the reviewer's risk/auth/rationale summary.
+				ctx.ui.notify(formatMixedReviewOnlyRoutingNotice(reviewOnlyDecision.segments), "info");
+			}
 			const gating = await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
 			if (gating && gating.block === true) return gating;
 
@@ -571,9 +581,6 @@ export default function (pi: ExtensionAPI): void {
 					sandboxedCommands: rewritten.sandboxedCommands,
 					startTime: Date.now(),
 				});
-				if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
-					ctx.ui.notify(formatMixedReviewOnlyRoutingNotice(reviewOnlyDecision.segments), "info");
-				}
 				return undefined;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -1132,7 +1139,6 @@ export function formatMixedReviewOnlyRoutingNotice(segments: readonly MixedRevie
 		const prefix = segment.operatorBefore ? `${segment.operatorBefore} ` : "";
 		lines.push(`  ${prefix}${route}: ${truncate(segment.source, 160)}`);
 	}
-	lines.push("  sandbox escape: sandboxed segments will not rerun the whole chain bare");
 	return lines.join("\n");
 }
 
