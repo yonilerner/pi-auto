@@ -217,9 +217,11 @@ The sandbox subsystem previously had its own `alwaysAnnounceDenials` boolean; it
 }
 ```
 
-The matcher only routes plain word-only bash commands. For a compound command, every command in the script must match a configured prefix; `gh auth status && gh pr list` matches `[["gh"]]`. Command names are matched exactly: `[["gh"]]` matches only bare `gh`, not `./gh` or `/tmp/gh`; configure a pathful command explicitly, e.g. `[["/usr/bin/gh"]]`.
+The matcher only routes plain word-only bash commands. Command names are matched exactly: `[["gh"]]` matches only bare `gh`, not `./gh` or `/tmp/gh`; configure a pathful command explicitly, e.g. `[["/usr/bin/gh"]]`.
 
-If a command appears to invoke a review-only prefix but uses unsupported shell syntax, pi-auto blocks it with a targeted repair message instead of falling back to sandbox execution. For example, `gh pr create --body $'...\\n...'`, `GH_DEBUG=api gh auth status`, `gh auth status > out.txt`, and `gh auth status && rm -rf /tmp/x` are blocked before execution; rewrite them as plain argv-only commands (for multiline text, use a temp file plus `--body-file`).
+For top-level `&&` / `||` chains that mix review-only and normal commands, pi-auto reviews the original command once, runs review-only segments bare, and wraps the other segments in the OS sandbox. For example, `gh auth status && ./safe-looking-script.sh` runs `gh auth status` review-only and `./safe-looking-script.sh` sandboxed. When `noticeLevel` includes normal notices, pi-auto also prints a per-segment routing notice before execution. If a sandboxed segment is denied, pi-auto does not retry the whole chain outside the sandbox, because that would also unsandbox the normal segments. Compound chains where every command matches the configured prefix still run as one review-only command; `gh auth status && gh pr list` matches `[["gh"]]`.
+
+If a command appears to invoke a review-only prefix but uses unsupported shell syntax, pi-auto blocks it with a targeted repair message instead of falling back to sandbox execution. For example, `gh pr create --body $'...\\n...'`, `GH_DEBUG=api gh auth status`, `gh auth status > out.txt`, `gh auth status; rm -rf /tmp/x`, and `if true; then gh auth status; fi` are blocked before execution; rewrite review-only segments as plain argv-only commands (for multiline text, use a temp file plus `--body-file`).
 
 ### Sandbox: silencing `DANGEROUS_FILES` deny noise
 
