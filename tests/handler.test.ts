@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
 import {
+	buildMixedReviewOnlySequenceCommand,
+	cleanupAfterSandboxCommands,
 	decideSandboxReviewOnlyPrefix,
 	fallbackToUser,
 	formatMixedReviewOnlyRoutingNotice,
@@ -173,6 +175,59 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 	it("does not block unrelated commands that mention the review-only command as an argument", () => {
 		expect(decideSandboxReviewOnlyPrefix("echo gh", [["gh"]]).kind).toBe("no-match");
 		expect(decideSandboxReviewOnlyPrefix("printf gh", [["gh"]]).kind).toBe("no-match");
+	});
+
+	it("records one sandbox cleanup per wrapped mixed-sequence segment", async () => {
+		const decision = decideSandboxReviewOnlyPrefix(
+			"gh auth status && ./test.sh || npm test && gh pr list",
+			[["gh"]],
+		);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind !== "mixed-sequence") return;
+
+		const wrap = vi.fn(async (command: string) => `sandbox(${command})`);
+		const rewritten = await buildMixedReviewOnlySequenceCommand(
+			decision.segments,
+			"/repo",
+			SETTINGS.sandbox,
+			{ wrapBashCommand: wrap },
+		);
+
+		expect(wrap).toHaveBeenCalledTimes(2);
+		expect(wrap.mock.calls.map((call) => call[0])).toEqual(["./test.sh", "npm test"]);
+		expect(rewritten.sandboxedCommands).toEqual(["./test.sh", "npm test"]);
+		expect(rewritten.sandboxWrapCount).toBe(2);
+		expect(rewritten.command).toBe("gh auth status && sandbox(./test.sh) || sandbox(npm test) && gh pr list");
+
+		const cleanup = vi.fn();
+		cleanupAfterSandboxCommands(rewritten.sandboxWrapCount, cleanup);
+		expect(cleanup).toHaveBeenCalledTimes(2);
+	});
+
+	it("cleans up already wrapped mixed-sequence segments if a later wrap fails", async () => {
+		const decision = decideSandboxReviewOnlyPrefix(
+			"gh auth status && ./first.sh || ./second.sh",
+			[["gh"]],
+		);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind !== "mixed-sequence") return;
+
+		const wrap = vi.fn(async (command: string) => {
+			if (command === "./second.sh") throw new Error("boom");
+			return `sandbox(${command})`;
+		});
+		const cleanup = vi.fn();
+
+		await expect(buildMixedReviewOnlySequenceCommand(
+			decision.segments,
+			"/repo",
+			SETTINGS.sandbox,
+			{ wrapBashCommand: wrap, cleanupAfterSandboxCommands: cleanup },
+		)).rejects.toThrow("boom");
+
+		expect(wrap).toHaveBeenCalledTimes(2);
+		expect(cleanup).toHaveBeenCalledOnce();
+		expect(cleanup).toHaveBeenCalledWith(1);
 	});
 
 	it("uses longer configured prefixes when enough static argv is visible", () => {

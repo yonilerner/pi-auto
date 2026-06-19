@@ -1129,11 +1129,17 @@ export function decideSandboxReviewOnlyPrefix(
 	return { kind: "no-match" };
 }
 
-async function buildMixedReviewOnlySequenceCommand(
+export async function buildMixedReviewOnlySequenceCommand(
 	segments: readonly MixedReviewOnlySegment[],
 	cwd: string,
 	sandbox: SandboxSettings,
+	deps: {
+		wrapBashCommand?: typeof wrapBashCommand;
+		cleanupAfterSandboxCommands?: (count: number) => void;
+	} = {},
 ): Promise<{ command: string; sandboxedCommands: string[]; sandboxWrapCount: number }> {
+	const wrap = deps.wrapBashCommand ?? wrapBashCommand;
+	const cleanup = deps.cleanupAfterSandboxCommands ?? cleanupAfterSandboxCommands;
 	const out: string[] = [];
 	const sandboxedCommands: string[] = [];
 	let sandboxWrapCount = 0;
@@ -1144,20 +1150,23 @@ async function buildMixedReviewOnlySequenceCommand(
 				out.push(segment.source);
 			} else {
 				sandboxedCommands.push(segment.source);
-				out.push(await wrapBashCommand(segment.source, cwd, sandbox));
+				out.push(await wrap(segment.source, cwd, sandbox));
 				sandboxWrapCount++;
 			}
 		}
 	} catch (err) {
-		cleanupAfterSandboxCommands(sandboxWrapCount);
+		cleanup(sandboxWrapCount);
 		throw err;
 	}
 	return { command: out.join(" "), sandboxedCommands, sandboxWrapCount };
 }
 
-function cleanupAfterSandboxCommands(count: number): void {
+export function cleanupAfterSandboxCommands(
+	count: number,
+	cleanup: () => void = cleanupAfterSandboxCommand,
+): void {
 	for (let i = 0; i < count; i++) {
-		cleanupAfterSandboxCommand();
+		cleanup();
 	}
 }
 
