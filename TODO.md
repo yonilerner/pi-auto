@@ -122,6 +122,17 @@ at the bottom of the relevant section.
 
 ## Reviewer architecture
 
+- [ ] **Suspected sandbox-failure classifier.** Linux ASRT/bubblewrap failures
+      sometimes look like normal application failures (`ENOENT`, keyring/socket
+      errors, etc.), so pi-auto misses the sandbox escape path and the agent
+      tries a different approach. Consider an opt-in classifier for failed
+      sandboxed bash commands that do not match confirmed-denial heuristics:
+      first decide whether the failure was likely sandbox-caused and
+      mechanically/idempotency-safe to retry, then use the existing escape
+      reviewer for the authorization/security decision. See
+      [`docs/sandbox-unknown-failure-classifier.md`](docs/sandbox-unknown-failure-classifier.md)
+      for the design notes and open questions.
+
 - [ ] **Two-stage classifier.** Anthropic's auto mode
       ([engineering blog](https://www.anthropic.com/engineering/claude-code-auto-mode))
       uses a fast single-token yes/no first pass and only invokes the
