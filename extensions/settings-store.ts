@@ -89,10 +89,15 @@ export interface LoadSettingsOptions {
 	 */
 	userGlobalPath?: string;
 	/**
-	 * Override per-project lookup. When provided, this exact path is used and
-	 * the upward walk is skipped. Tests use this to pin behavior.
+	 * Override per-project lookup. Semantics:
+	 *   - `undefined`: auto-discover via `findPerProjectPath`.
+	 *   - `null`:      explicitly skip the per-project layer entirely. Used by
+	 *                  the UI to compute the inherited value of a field ("what
+	 *                  would the effective value be if per-project didn't set
+	 *                  this?"), see `nextArrayForAppend`.
+	 *   - `string`:    use this exact path (tests use this to pin behavior).
 	 */
-	perProjectPath?: string;
+	perProjectPath?: string | null;
 }
 
 /**
@@ -229,7 +234,11 @@ export function loadSettings(opts: LoadSettingsOptions): LoadedSettings {
 	const env = opts.env ?? process.env;
 	const userGlobalPath = opts.userGlobalPath ?? resolveUserGlobalPath(env);
 	const perProjectPath =
-		opts.perProjectPath !== undefined ? opts.perProjectPath : findPerProjectPath(opts.cwd);
+		opts.perProjectPath === null
+			? null
+			: opts.perProjectPath !== undefined
+				? opts.perProjectPath
+				: findPerProjectPath(opts.cwd);
 
 	const settings: PiAutoSettings = {
 		...opts.defaults,
@@ -301,4 +310,86 @@ export function saveSettingField<K extends keyof PiAutoSettings>(args: {
  */
 export function _envVarsForTest(): readonly string[] {
 	return ENV_VAR_OVERRIDES.map((o) => o.envVar);
+}
+
+/* ------------------------------------------------------------------ */
+/* Array-field editing with copy-on-first-add inheritance.            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Compute the next array to persist when the user appends an item to a
+ * list-typed setting from the UI.
+ *
+ * If the file already contains the field, we append to it. If not, we copy
+ * the `inheritedItems` (the effective value the user currently sees, fed in
+ * by lower layers — defaults + user-global) and append to that copy.
+ *
+ * This preserves the user's mental model: "add an item" in the UI should add
+ * it to the list they see, not silently truncate the list to a single item.
+ * Layered settings replace arrays rather than concatenating, so a naive
+ * `[newItem]` write would clobber every inherited entry the moment the user
+ * adds anything project-level.
+ */
+export function nextArrayForAppend<T>(
+	currentInFile: readonly T[] | undefined,
+	inheritedItems: readonly T[],
+	item: T,
+): T[] {
+	const base = currentInFile !== undefined ? [...currentInFile] : [...inheritedItems];
+	base.push(item);
+	return base;
+}
+
+/**
+ * Companion to `nextArrayForAppend`: compute the next array when the user
+ * removes one item from a list-typed setting. Same inheritance rule — if the
+ * file has no entry yet, we materialize the inherited list before removing,
+ * so removing an inherited entry produces "everything except that one" in
+ * the project file (which is what the user sees).
+ *
+ * Returns the input unchanged if the index is out of range.
+ */
+export function nextArrayForRemove<T>(
+	currentInFile: readonly T[] | undefined,
+	inheritedItems: readonly T[],
+	index: number,
+): T[] {
+	const base = currentInFile !== undefined ? [...currentInFile] : [...inheritedItems];
+	if (index < 0 || index >= base.length) return base;
+	base.splice(index, 1);
+	return base;
+}
+
+/**
+ * Append or remove from a list-typed settings field in a partial JSON file,
+ * with the copy-on-first-add inheritance behavior implemented by
+ * `nextArrayForAppend` / `nextArrayForRemove`.
+ *
+ * The caller supplies `read`/`write` plucking the array out of and into the
+ * partial. This keeps the helper type-agnostic about top-level vs. nested
+ * (sandbox sub-field) paths without hardcoding each one here.
+ *
+ * Returns the array that was written, so the UI can refresh its view
+ * without a separate disk read.
+ */
+export function modifySettingArrayField<T>(args: {
+	filePath: string;
+	read: (partial: Partial<PiAutoSettings>) => readonly T[] | undefined;
+	write: (partial: Partial<PiAutoSettings>, value: T[]) => void;
+	inheritedItems: readonly T[];
+	op: { kind: "append"; item: T } | { kind: "remove"; index: number };
+}): { written: T[] } {
+	const existing = readPartialSettings(args.filePath);
+	const base: Partial<PiAutoSettings> = existing.ok ? { ...existing.parsed } : {};
+	if (base.sandbox) base.sandbox = { ...base.sandbox } as SandboxSettings;
+	const currentInFile = args.read(base);
+	const next =
+		args.op.kind === "append"
+			? nextArrayForAppend(currentInFile, args.inheritedItems, args.op.item)
+			: nextArrayForRemove(currentInFile, args.inheritedItems, args.op.index);
+	args.write(base, next);
+	const dir = path.dirname(args.filePath);
+	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+	writeFileSync(args.filePath, `${JSON.stringify(base, null, 2)}\n`, "utf8");
+	return { written: next };
 }
