@@ -399,6 +399,28 @@ describe("detectSandboxDenialForCommand", () => {
 		expect(out.reason).toBe("filesystem operation denied by sandbox");
 		expect(out.annotatedOutput).toContain("file-read-data /home/me/repo/.gitmodules");
 	});
+
+	it("classifies Linux strace-backed file annotations as filesystem denials", () => {
+		vi.spyOn(SandboxManager, "annotateStderrWithSandboxFailures").mockReturnValue(
+			[
+				"cat: /etc/passwd: Permission denied",
+				"<sandbox_violations>",
+				"linux file-read denied: openat(\"/etc/passwd\") -> EACCES (Permission denied)",
+				"</sandbox_violations>",
+			].join("\n"),
+		);
+
+		const out = detectSandboxDenialForCommand(
+			"cat /etc/passwd",
+			true,
+			"cat: /etc/passwd: Permission denied\n",
+			"linux",
+		);
+
+		expect(out.denied).toBe(true);
+		expect(out.reason).toBe("filesystem operation denied by sandbox");
+		expect(buildRetryReason(out.reason, out.annotatedOutput, [], "linux")).toContain("/etc/passwd");
+	});
 });
 
 describe("buildRetryReason", () => {
@@ -509,6 +531,17 @@ describe("buildRetryReason", () => {
 		expect(reason).toMatch(/filesystem/i);
 	});
 
+	it("extracts filesystem paths from Linux Permission denied stderr", () => {
+		const reason = buildRetryReason(
+			"filesystem operation denied by sandbox",
+			"cat: /etc/passwd: Permission denied\n",
+			[],
+			"linux",
+		);
+		expect(reason).toContain("/etc/passwd");
+		expect(reason).toMatch(/filesystem/i);
+	});
+
 	it("uses the ASRT violation path before a higher-level stderr path", () => {
 		const output = [
 			"sqlite: /Users/me/repo/.git/gitbutler/but.sqlite: Operation not permitted",
@@ -593,6 +626,22 @@ describe("filterNoiseFromAnnotation", () => {
 		expect(filtered).toContain("file-write-create");
 		expect(filtered).toContain("/private/tmp/pi-agent/sandbox-should-block");
 		expect(filtered).not.toContain("sysctl-read");
+	});
+
+	it("drops Linux failed-syscall noise while keeping permission denials", () => {
+		const original = "cat: /etc/passwd: Permission denied\n";
+		const annotated = `${original}<sandbox_violations>\nlinux file-read denied: access(\"/etc/ld.so.preload\") -> ENOENT (No such file or directory)\nlinux file-write denied: openat(\"/dev/tty\") -> ENXIO (No such device or address)\nlinux file-read denied: openat(\"/etc/passwd\") -> EACCES (Permission denied)\n</sandbox_violations>`;
+		const filtered = filterNoiseFromAnnotation(annotated, original);
+		expect(filtered).not.toBe(original);
+		expect(filtered).toContain("/etc/passwd");
+		expect(filtered).not.toContain("/etc/ld.so.preload");
+		expect(filtered).not.toContain("/dev/tty");
+	});
+
+	it("returns the verbatim original when Linux annotations are only failed-syscall noise", () => {
+		const original = "hi\n";
+		const annotated = `${original}<sandbox_violations>\nlinux file-read denied: access(\"/etc/ld.so.preload\") -> ENOENT (No such file or directory)\nlinux file-read denied: openat(\"/usr/share/locale/en_US.UTF-8/LC_MESSAGES/bash.mo\") -> ENOENT (No such file or directory)\nlinux file-write denied: openat(\"/dev/tty\") -> ENXIO (No such device or address)\n</sandbox_violations>`;
+		expect(filterNoiseFromAnnotation(annotated, original)).toBe(original);
 	});
 
 	it("covers every known-noise marker without filtering anything informative", () => {
@@ -729,6 +778,7 @@ describe("sandbox git excludes", () => {
 			process.env.GIT_CONFIG_KEY_1 = "user.email";
 			process.env.GIT_CONFIG_VALUE_1 = "test@example.invalid";
 			const wrapped = withSandboxGitExcludes("git status", process.cwd(), "linux");
+			expect(wrapped).toMatch(/^: 'pi-auto-asrt-key [a-f0-9]{16}'\n/);
 			expect(wrapped).toContain("export GIT_CONFIG_COUNT='3'");
 			expect(wrapped).toContain("export GIT_CONFIG_KEY_2='core.excludesFile'");
 			expect(wrapped).toContain("\ngit status");
@@ -737,6 +787,16 @@ describe("sandbox git excludes", () => {
 			const content = readFileSync(excludePath as string, "utf8");
 			expect(content).toContain(".bashrc");
 			expect(content).toContain(".claude/agents");
+		});
+	});
+
+	it("puts a unique command marker before the common git-excludes prelude", () => {
+		withCleanGitConfigEnv(() => {
+			const first = withSandboxGitExcludes("echo first", process.cwd(), "linux");
+			const second = withSandboxGitExcludes("echo second", process.cwd(), "linux");
+			expect(first.slice(0, 100)).not.toBe(second.slice(0, 100));
+			expect(first).toContain("\necho first");
+			expect(second).toContain("\necho second");
 		});
 	});
 

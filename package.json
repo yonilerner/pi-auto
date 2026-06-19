@@ -37,7 +37,7 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
-		"@foxfirecodes/sandbox-runtime": "foxfire",
+		"@foxfirecodes/sandbox-runtime": "0.0.55-foxfirecodes.3",
 		"tree-sitter": "^0.25.0",
 		"tree-sitter-bash": "^0.25.1"
 	}

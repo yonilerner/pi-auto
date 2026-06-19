@@ -204,6 +204,32 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		expect(cleanup).toHaveBeenCalledTimes(2);
 	});
 
+	it("records exact ASRT commands for mixed-sequence annotation lookup", async () => {
+		const decision = decideSandboxReviewOnlyPrefix(
+			"gh auth status && ./test.sh || npm test",
+			[["gh"]],
+		);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind !== "mixed-sequence") return;
+
+		const wrap = vi.fn(async (command: string) => ({
+			sandboxCommand: `env PI_AUTO_GIT_EXCLUDES=1 ${command}`,
+			wrappedCommand: `sandbox(${command})`,
+		}));
+		const rewritten = await buildMixedReviewOnlySequenceCommand(
+			decision.segments,
+			"/repo",
+			SETTINGS.sandbox,
+			{ wrapBashCommand: wrap },
+		);
+
+		expect(rewritten.sandboxedCommands).toEqual(["./test.sh", "npm test"]);
+		expect(rewritten.sandboxAnnotationCommands).toEqual([
+			"env PI_AUTO_GIT_EXCLUDES=1 ./test.sh",
+			"env PI_AUTO_GIT_EXCLUDES=1 npm test",
+		]);
+	});
+
 	it("cleans up already wrapped mixed-sequence segments if a later wrap fails", async () => {
 		const decision = decideSandboxReviewOnlyPrefix(
 			"gh auth status && ./first.sh || ./second.sh",

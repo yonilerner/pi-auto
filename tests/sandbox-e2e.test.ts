@@ -54,7 +54,7 @@ import {
 	detectSandboxDenialForCommand,
 	getNetworkAttemptsSince,
 	runBareCommand,
-	wrapBashCommand,
+	wrapBashCommandForExecution,
 } from "../extensions/sandbox.ts";
 
 const SHOULD_RUN = process.env.PI_AUTO_SANDBOX_E2E === "1";
@@ -132,16 +132,16 @@ async function runScenario(args: {
 	scenarioCallbackBuffer = [];
 	await initSandbox(config);
 	const start = Date.now();
-	const wrapped = await wrapBashCommand(command);
+	const wrapped = await wrapBashCommandForExecution(command);
 	const exec = await runBareCommand(
-		wrapped,
+		wrapped.wrappedCommand,
 		process.cwd(),
 		args.timeoutMs ? AbortSignal.timeout(args.timeoutMs) : undefined,
 	);
 	cleanupAfterSandboxCommand();
 	const combinedOutput = `${exec.stdout}${exec.stderr}`;
 	const detect = detectSandboxDenialForCommand(
-		command,
+		wrapped.sandboxCommand,
 		exec.exitCode !== 0 && exec.exitCode !== null,
 		combinedOutput,
 	);

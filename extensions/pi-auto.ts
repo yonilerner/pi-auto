@@ -39,8 +39,9 @@ import {
 	getNetworkAttemptsSince,
 	runBareCommand,
 	shutdownSandbox,
-	wrapBashCommand,
+	wrapBashCommandForExecution,
 	type SandboxState,
+	type WrappedSandboxCommand,
 } from "./sandbox.ts";
 import { decideScope } from "./scope.ts";
 import { registerSettingsCommand } from "./settings-ui.ts";
@@ -146,6 +147,13 @@ interface WrappedBashState {
 	mixedReviewOnlySequence?: boolean;
 	/** Original source text for each segment that was actually wrapped with ASRT. */
 	sandboxedCommands?: string[];
+	/**
+	 * Exact command string(s) passed to ASRT wrapWithSandbox(). On Linux these
+	 * can differ from the original source because pi-auto prepends generated git
+	 * exclude config before wrapping. ASRT annotation lookup is keyed by this
+	 * exact string.
+	 */
+	sandboxAnnotationCommands?: string[];
 	/**
 	 * Number of ASRT wrapWithSandbox() calls represented by this single bash
 	 * tool result. Usually 1, but mixed review-only routing can pre-wrap
@@ -371,8 +379,8 @@ export default function (pi: ExtensionAPI): void {
 
 		const combinedOutput = extractTextContent(event);
 		const denial = detectSandboxDenialForCommands(
-			wrap.sandboxedCommands && wrap.sandboxedCommands.length > 0
-				? wrap.sandboxedCommands
+			wrap.sandboxAnnotationCommands && wrap.sandboxAnnotationCommands.length > 0
+				? wrap.sandboxAnnotationCommands
 				: [wrap.originalCommand],
 			event.isError,
 			combinedOutput,
@@ -591,6 +599,7 @@ export default function (pi: ExtensionAPI): void {
 					mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
 					mixedReviewOnlySequence: true,
 					sandboxedCommands: rewritten.sandboxedCommands,
+					sandboxAnnotationCommands: rewritten.sandboxAnnotationCommands,
 					sandboxWrapCount: rewritten.sandboxWrapCount,
 					startTime: Date.now(),
 				});
@@ -646,16 +655,17 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		try {
-			const wrapped = await wrapBashCommand(originalCommand, ctx.cwd, settings.sandbox);
+			const wrapped = await wrapBashCommandForExecution(originalCommand, ctx.cwd, settings.sandbox);
 			// Mutate the event input in place so pi runs the wrapped command. Per
 			// the pi extension docs (tool_call) this is the supported path for
 			// argument patching. The user will see the wrapped form in the bash
 			// tool display — there isn't currently a pi API to display X while
 			// executing Y. annotateBashDisplay is reserved for a future hook.
-			(event.input as { command?: unknown }).command = wrapped;
+			(event.input as { command?: unknown }).command = wrapped.wrappedCommand;
 			wrappedBashByToolCallId.set(event.toolCallId, {
 				originalCommand,
 				mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
+				sandboxAnnotationCommands: [wrapped.sandboxCommand],
 				sandboxWrapCount: 1,
 				startTime: Date.now(),
 			});
@@ -1134,14 +1144,24 @@ export async function buildMixedReviewOnlySequenceCommand(
 	cwd: string,
 	sandbox: SandboxSettings,
 	deps: {
-		wrapBashCommand?: typeof wrapBashCommand;
+		wrapBashCommand?: (
+			command: string,
+			cwd?: string,
+			sandbox?: SandboxSettings,
+		) => Promise<string | WrappedSandboxCommand>;
 		cleanupAfterSandboxCommands?: (count: number) => void;
 	} = {},
-): Promise<{ command: string; sandboxedCommands: string[]; sandboxWrapCount: number }> {
-	const wrap = deps.wrapBashCommand ?? wrapBashCommand;
+): Promise<{
+	command: string;
+	sandboxedCommands: string[];
+	sandboxAnnotationCommands: string[];
+	sandboxWrapCount: number;
+}> {
+	const wrap = deps.wrapBashCommand ?? wrapBashCommandForExecution;
 	const cleanup = deps.cleanupAfterSandboxCommands ?? cleanupAfterSandboxCommands;
 	const out: string[] = [];
 	const sandboxedCommands: string[] = [];
+	const sandboxAnnotationCommands: string[] = [];
 	let sandboxWrapCount = 0;
 	try {
 		for (const segment of segments) {
@@ -1150,7 +1170,14 @@ export async function buildMixedReviewOnlySequenceCommand(
 				out.push(segment.source);
 			} else {
 				sandboxedCommands.push(segment.source);
-				out.push(await wrap(segment.source, cwd, sandbox));
+				const wrapped = await wrap(segment.source, cwd, sandbox);
+				if (typeof wrapped === "string") {
+					out.push(wrapped);
+					sandboxAnnotationCommands.push(segment.source);
+				} else {
+					out.push(wrapped.wrappedCommand);
+					sandboxAnnotationCommands.push(wrapped.sandboxCommand);
+				}
 				sandboxWrapCount++;
 			}
 		}
@@ -1158,7 +1185,7 @@ export async function buildMixedReviewOnlySequenceCommand(
 		cleanup(sandboxWrapCount);
 		throw err;
 	}
-	return { command: out.join(" "), sandboxedCommands, sandboxWrapCount };
+	return { command: out.join(" "), sandboxedCommands, sandboxAnnotationCommands, sandboxWrapCount };
 }
 
 export function cleanupAfterSandboxCommands(
