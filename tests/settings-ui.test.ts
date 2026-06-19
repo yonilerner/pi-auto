@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	formatCommandPrefix,
 	formatLayerAttribution,
 	formatSavedSettingNotification,
 	formatSavedSettingValue,
+	parseCommandPrefixInput,
 } from "../extensions/settings-ui.ts";
 
 describe("formatLayerAttribution", () => {
@@ -49,5 +51,35 @@ describe("formatSavedSettingValue", () => {
 		expect(formatSavedSettingValue("")).toBe('""');
 		expect(formatSavedSettingValue("  model")).toBe('"  model"');
 		expect(formatSavedSettingValue("model\nnext")).toBe('"model\\nnext"');
+	});
+});
+
+describe("command prefix UI parsing", () => {
+	it("parses shell-word command prefixes", () => {
+		expect(parseCommandPrefixInput("gh pr view")).toEqual(["gh", "pr", "view"]);
+		expect(parseCommandPrefixInput("npm test -- --grep 'with spaces'")).toEqual([
+			"npm",
+			"test",
+			"--",
+			"--grep",
+			"with spaces",
+		]);
+	});
+
+	it("accepts JSON array input for exact argv entries", () => {
+		expect(parseCommandPrefixInput('["cmd", "arg with spaces"]')).toEqual([
+			"cmd",
+			"arg with spaces",
+		]);
+	});
+
+	it("rejects empty command prefixes", () => {
+		expect(() => parseCommandPrefixInput("   ")).toThrow("command prefix cannot be empty");
+		expect(() => parseCommandPrefixInput("[]")).toThrow("command prefix cannot be empty");
+	});
+
+	it("renders prefixes as shell-ish words", () => {
+		expect(formatCommandPrefix(["gh", "pr", "view"])).toBe("gh pr view");
+		expect(formatCommandPrefix(["cmd", "arg with spaces"])).toBe("cmd 'arg with spaces'");
 	});
 });

@@ -123,13 +123,15 @@ Interactive form, opened with the slash command. The flow:
 
 1. Pick which layer to edit (user-global or per-project).
 2. Pick a field; each row shows the field's current effective value plus the layer it loaded from (so you can see at a glance when you're editing a field that's already shadowed by a higher-precedence layer).
-3. The editor depends on the field type: boolean / enum fields show a small picker, string / number fields open a single-line input.
+3. The editor depends on the field type: boolean / enum fields show a small picker, string / number fields open a single-line input, and list fields open an add/remove list view.
 
 **Search.** Press `/` in the field picker to filter by label / description. Type to refine, Enter to keep the filter and navigate, Esc to clear. The filter is fuzzy across the row's primary column (the field name) and its description, so typing `noise`, `notice`, `sand` etc. each surface a useful subset.
 
 Saves are written immediately to the JSON file you picked in step 1 and applied in-process for the current session — no relaunch required. The save confirmation includes the rendered value that was written.
 
-The form intentionally only handles scalar / boolean / enum fields. List-typed fields (`sensitivePathPatterns`, `extraSafeCommandPrefixes`, sandbox `allowedDomains` / `deniedDomains` / `allowRead` / `denyRead` / `allowWrite` / `denyWrite` / `reviewOnlyCommandPrefixes` / `allowedDangerousFiles`) and `customPolicy` (free-form prose) are not in the form — edit them in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
+List-typed fields are editable in the form. For plain `string[]` fields, press `a`/`+` to add an item and `d`/`x`/Delete/Enter on a row to remove it. For command-prefix `string[][]` fields (`extraSafeCommandPrefixes` and `sandbox.reviewOnlyCommandPrefixes`), add each prefix as shell words (for example `npm test` or `gh`) or as a JSON string array when you need exact argv values (for example `["cmd", "arg with spaces"]`).
+
+The form intentionally still leaves `customPolicy` (free-form prose) out of the UI — edit it in the JSON file directly, then run `/pi-auto-reload-settings` to apply the manual edits without restarting pi. The `/pi-auto-settings` output prints the resolved file paths if you've never picked a layer before, and the README §Where settings come from describes both files.
 
 ### Reviewer model
 
@@ -234,7 +236,7 @@ If a command appears to invoke a review-only prefix but uses unsupported shell s
 }
 ```
 
-Edit the JSON directly (this is a list-typed field, not in `/pi-auto-settings`), then `/pi-auto-reload-settings`.
+Edit this through `/pi-auto-settings`, or edit the JSON directly and run `/pi-auto-reload-settings`.
 
 Trade-off: each entry removed is one fewer guard against shell-rc / config-file exploits inside the sandbox. The files aren't equally risky — `.gitconfig` allows `[core] sshCommand`-style code execution and `.bashrc`/`.zshrc` are obvious; `.gitmodules` is inert unless you also run `git submodule update` (or equivalent) in the sandbox. Only opt in to files whose threat model you've thought about.
 

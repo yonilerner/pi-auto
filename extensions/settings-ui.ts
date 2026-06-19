@@ -15,26 +15,24 @@
  *          per-project or by env, your change will be shadowed.
  *
  *   3. Pressing enter on a row opens a per-field editor:
- *        - bool / enum   → SelectList of the allowed values
- *        - string        → Input overlay (single-line)
- *        - number        → Input overlay with parseFloat validation
- *        - stringList    → Input overlay with comma-separated parsing
+ *        - bool / enum       → SelectList of the allowed values
+ *        - string            → Input overlay (single-line)
+ *        - number            → Input overlay with parseFloat validation
+ *        - stringList        → dedicated add/remove list view
+ *        - commandPrefixList → dedicated add/remove list view for string[][]
  *
  *   4. On submit, the new value is written to the chosen layer's JSON file
  *      (creating it if needed). Live settings are refreshed in place so the
  *      change takes effect for the current session without a relaunch.
  *
  * Out of scope for v1 (see TODO.md):
- *   - `extraSafeCommandPrefixes` / `sandbox.reviewOnlyCommandPrefixes` (both
- *     `string[][]`). Need a 2D editor; JSON file only for now.
  *   - `customPolicy` (free-form prose appended to the base policy). Single-
  *     line input is the wrong shape for it; the JSON file is.
  *   - `environment` (Claude Code-style prose infrastructure overlay). Wired
  *     when we add the field — not yet in PiAutoSettings.
  *
- * List-typed `string[]` fields (`sensitivePathPatterns`, the sandbox
- * `allow*` / `deny*` arrays, `allowedDangerousFiles`) ARE supported, via a
- * dedicated add/remove list view. The per-project layer follows the
+ * List-typed fields (`string[]` plus command-prefix `string[][]` arrays) are
+ * supported via dedicated add/remove views. The per-project layer follows the
  * "copy inherited items on first add" rule from `nextArrayForAppend` so a
  * first per-project add doesn't silently clobber the inherited list.
  */
@@ -70,6 +68,7 @@ import {
 	modifySettingArrayField,
 	saveSettingField,
 	type LoadedSettings,
+	type PartialPiAutoSettings,
 } from "./settings-store.ts";
 import type {
 	PiAutoSettings,
@@ -89,13 +88,11 @@ type EditableLayer = "user-global" | "per-project";
  * change back into the typed settings shape (so the UI doesn't need to
  * special-case nested fields like `sandbox.mode`).
  */
-interface FieldDescriptor {
+interface BaseFieldDescriptor {
 	/** Unique row id; can use dotted form for nested fields ("sandbox.mode"). */
 	id: string;
 	label: string;
 	help?: string;
-	kind: "bool" | "string" | "number" | "enum" | "stringList";
-	enumValues?: readonly string[];
 	/** Read the current effective display value as a string. */
 	read: (settings: PiAutoSettings) => string;
 	/**
@@ -104,35 +101,75 @@ interface FieldDescriptor {
 	 * "sandbox", so toggling any sub-field shows the sandbox layer.
 	 */
 	settingsKey: keyof PiAutoSettings;
+}
+
+interface ScalarFieldDescriptor extends BaseFieldDescriptor {
+	kind: "bool" | "string" | "number" | "enum";
+	enumValues?: readonly string[];
 	/**
-	 * For scalar fields (bool / string / number / enum): given the current
-	 * effective settings and a raw user-entered string, compute the new
-	 * value to persist under settingsKey. Unused for list-typed fields.
+	 * Given the current effective settings and a raw user-entered string,
+	 * compute the new value to persist under settingsKey.
 	 */
-	applyChange?: (
+	applyChange: (
 		settings: PiAutoSettings,
 		raw: string,
 	) => PiAutoSettings[keyof PiAutoSettings];
-	/**
-	 * For `stringList` fields: pluck the array out of effective settings (to
-	 * render the current items), out of a partial settings JSON (to know
-	 * what the file already contains for the inheritance rule), and back
-	 * into a partial (to persist). Sandbox sub-fields work fine — each
-	 * descriptor encapsulates its own path.
-	 */
-	arrayAccess?: {
-		getEffective: (settings: PiAutoSettings) => readonly string[];
-		readPartial: (partial: Partial<PiAutoSettings>) => readonly string[] | undefined;
-		writePartial: (partial: Partial<PiAutoSettings>, value: string[]) => void;
-	};
 }
+
+interface ArrayAccess<T> {
+	/** Pluck the effective array out of merged settings. */
+	getEffective: (settings: PiAutoSettings) => readonly T[];
+	/** Pluck this field's explicit value out of a partial settings JSON. */
+	readPartial: (partial: PartialPiAutoSettings) => readonly T[] | undefined;
+	/** Persist this field back into a partial settings JSON. */
+	writePartial: (partial: PartialPiAutoSettings, value: T[]) => void;
+	/** Render one item for the list row and notifications. */
+	renderItem: (item: T) => string;
+	/** Parse the add-item prompt into the typed array item. */
+	parseInput: (raw: string) => T;
+}
+
+interface ArrayFieldBase<T> extends BaseFieldDescriptor {
+	arrayAccess: ArrayAccess<T>;
+}
+
+interface StringListFieldDescriptor extends ArrayFieldBase<string> {
+	kind: "stringList";
+}
+
+interface CommandPrefixListFieldDescriptor extends ArrayFieldBase<string[]> {
+	kind: "commandPrefixList";
+}
+
+type ArrayFieldDescriptor<T> = ArrayFieldBase<T> & {
+	kind: "stringList" | "commandPrefixList";
+};
+
+type FieldDescriptor = ScalarFieldDescriptor | StringListFieldDescriptor | CommandPrefixListFieldDescriptor;
 
 /**
  * Helper: render the layer-attribution display value for a list-typed
  * field. "(empty)" for [], otherwise "<n> items".
  */
-function renderListSummary(items: readonly string[]): string {
-	return items.length === 0 ? "(empty)" : `${items.length} item${items.length === 1 ? "" : "s"}`;
+function renderListSummary(items: readonly unknown[], itemName = "item"): string {
+	return items.length === 0 ? "(empty)" : `${items.length} ${itemName}${items.length === 1 ? "" : "s"}`;
+}
+
+function parseStringListItemInput(raw: string): string {
+	const item = raw.trim();
+	if (item.length === 0) throw new Error("list item cannot be empty");
+	return item;
+}
+
+type StringArraySandboxKey = {
+	[K in keyof SandboxSettings]: SandboxSettings[K] extends string[] ? K : never;
+}[keyof SandboxSettings];
+
+function writeSandboxPartial(
+	partial: PartialPiAutoSettings,
+	patch: Partial<SandboxSettings>,
+): void {
+	partial.sandbox = { ...(partial.sandbox ?? {}), ...patch };
 }
 
 /**
@@ -140,18 +177,120 @@ function renderListSummary(items: readonly string[]): string {
  * the same read/write shape; factoring this out keeps the descriptor table
  * below readable.
  */
-function sandboxArrayAccess<K extends keyof SandboxSettings>(key: K): {
-	getEffective: (s: PiAutoSettings) => readonly string[];
-	readPartial: (p: Partial<PiAutoSettings>) => readonly string[] | undefined;
-	writePartial: (p: Partial<PiAutoSettings>, v: string[]) => void;
-} {
+function sandboxArrayAccess<K extends StringArraySandboxKey>(key: K): ArrayAccess<string> {
 	return {
-		getEffective: (s) => s.sandbox[key] as readonly string[],
-		readPartial: (p) => p.sandbox?.[key] as readonly string[] | undefined,
-		writePartial: (p, v) => {
-			p.sandbox = { ...(p.sandbox ?? {}), [key]: v } as PiAutoSettings["sandbox"];
-		},
+		getEffective: (s) => s.sandbox[key],
+		readPartial: (p) => p.sandbox?.[key],
+		writePartial: (p, v) => writeSandboxPartial(p, { [key]: v }),
+		renderItem: (item) => item,
+		parseInput: parseStringListItemInput,
 	};
+}
+
+function extraSafeCommandPrefixesArrayAccess(): ArrayAccess<string[]> {
+	return {
+		getEffective: (s) => s.extraSafeCommandPrefixes,
+		readPartial: (p) => p.extraSafeCommandPrefixes,
+		writePartial: (p, v) => {
+			p.extraSafeCommandPrefixes = v;
+		},
+		renderItem: formatCommandPrefix,
+		parseInput: parseCommandPrefixInput,
+	};
+}
+
+function reviewOnlyCommandPrefixesArrayAccess(): ArrayAccess<string[]> {
+	return {
+		getEffective: (s) => s.sandbox.reviewOnlyCommandPrefixes,
+		readPartial: (p) => p.sandbox?.reviewOnlyCommandPrefixes,
+		writePartial: (p, v) => writeSandboxPartial(p, { reviewOnlyCommandPrefixes: v }),
+		renderItem: formatCommandPrefix,
+		parseInput: parseCommandPrefixInput,
+	};
+}
+
+export function formatCommandPrefix(prefix: readonly string[]): string {
+	return prefix.map(formatCommandPrefixArg).join(" ");
+}
+
+function formatCommandPrefixArg(arg: string): string {
+	if (/^[A-Za-z0-9_./:=@%+-]+$/.test(arg)) return arg;
+	return `'${arg.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Parse a command-prefix entry for string[][] settings. The friendly path is
+ * shell-word input (`gh pr view`); JSON array input is accepted for exact argv
+ * values when quoting would be awkward (`["cmd", "arg with spaces"]`).
+ */
+export function parseCommandPrefixInput(raw: string): string[] {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) throw new Error("command prefix cannot be empty");
+	if (trimmed.startsWith("[")) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch (err) {
+			throw new Error(`invalid JSON command prefix: ${(err as Error).message}`);
+		}
+		if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
+			throw new Error("JSON command prefix must be a non-empty array of non-empty strings");
+		}
+		if (parsed.length === 0) throw new Error("command prefix cannot be empty");
+		return parsed;
+	}
+
+	const words: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | null = null;
+	let escaped = false;
+	let sawTokenChars = false;
+	for (const ch of trimmed) {
+		if (escaped) {
+			current += ch;
+			escaped = false;
+			sawTokenChars = true;
+			continue;
+		}
+		if (ch === "\\") {
+			escaped = true;
+			sawTokenChars = true;
+			continue;
+		}
+		if (quote) {
+			if (ch === quote) {
+				quote = null;
+			} else {
+				current += ch;
+				sawTokenChars = true;
+			}
+			continue;
+		}
+		if (ch === "'" || ch === '"') {
+			quote = ch;
+			sawTokenChars = true;
+			continue;
+		}
+		if (/\s/.test(ch)) {
+			if (sawTokenChars) {
+				if (current.length === 0) throw new Error("command prefix arguments cannot be empty");
+				words.push(current);
+				current = "";
+				sawTokenChars = false;
+			}
+			continue;
+		}
+		current += ch;
+		sawTokenChars = true;
+	}
+	if (escaped) current += "\\";
+	if (quote) throw new Error("unterminated quote in command prefix");
+	if (sawTokenChars) {
+		if (current.length === 0) throw new Error("command prefix arguments cannot be empty");
+		words.push(current);
+	}
+	if (words.length === 0) throw new Error("command prefix cannot be empty");
+	return words;
 }
 
 const FIELDS: FieldDescriptor[] = [
@@ -365,7 +504,27 @@ const FIELDS: FieldDescriptor[] = [
 			writePartial: (p, v) => {
 				p.sensitivePathPatterns = v;
 			},
+			renderItem: (item) => item,
+			parseInput: parseStringListItemInput,
 		},
+	},
+	{
+		id: "extraSafeCommandPrefixes",
+		label: "Extra safe command prefixes",
+		help: "Argv prefixes that bypass review for bash. Add as shell words (e.g. npm test) or JSON array.",
+		kind: "commandPrefixList",
+		settingsKey: "extraSafeCommandPrefixes",
+		read: (s) => renderListSummary(s.extraSafeCommandPrefixes, "prefix"),
+		arrayAccess: extraSafeCommandPrefixesArrayAccess(),
+	},
+	{
+		id: "sandbox.reviewOnlyCommandPrefixes",
+		label: "Sandbox: review-only command prefixes",
+		help: "Argv prefixes that skip sandboxing and run only after reviewer approval. Add as shell words (e.g. gh) or JSON array.",
+		kind: "commandPrefixList",
+		settingsKey: "sandbox",
+		read: (s) => renderListSummary(s.sandbox.reviewOnlyCommandPrefixes, "prefix"),
+		arrayAccess: reviewOnlyCommandPrefixesArrayAccess(),
 	},
 	{
 		id: "sandbox.allowedDomains",
@@ -715,7 +874,10 @@ async function editField(
 	deps: SettingsUIDeps,
 ): Promise<"saved" | "cancelled"> {
 	if (field.kind === "stringList") {
-		return await editListField(ctx, layer, field, deps);
+		return await editArrayField(ctx, layer, field, deps);
+	}
+	if (field.kind === "commandPrefixList") {
+		return await editArrayField(ctx, layer, field, deps);
 	}
 
 	const settings = deps.getSettings();
@@ -787,10 +949,18 @@ async function editField(
 export function computeInheritedListItems(
 	ctx: ExtensionContext,
 	layer: EditableLayer,
-	field: FieldDescriptor,
+	field: StringListFieldDescriptor,
 	deps: SettingsUIDeps,
 ): readonly string[] {
-	if (!field.arrayAccess) return [];
+	return computeInheritedArrayItems(ctx, layer, field, deps);
+}
+
+function computeInheritedArrayItems<T>(
+	ctx: ExtensionContext,
+	layer: EditableLayer,
+	field: ArrayFieldDescriptor<T>,
+	deps: SettingsUIDeps,
+): readonly T[] {
 	if (layer === "per-project") {
 		// Inherited = defaults + user-global, no per-project.
 		const inherited = loadSettings({
@@ -804,19 +974,12 @@ export function computeInheritedListItems(
 	return field.arrayAccess.getEffective(deps.defaults);
 }
 
-async function editListField(
+async function editArrayField<T>(
 	ctx: ExtensionContext,
 	layer: EditableLayer,
-	field: FieldDescriptor,
+	field: ArrayFieldDescriptor<T>,
 	deps: SettingsUIDeps,
 ): Promise<"saved" | "cancelled"> {
-	if (!field.arrayAccess) {
-		ctx.ui.notify(
-			`pi-auto settings: internal error — stringList field ${field.id} has no arrayAccess`,
-			"warning",
-		);
-		return "cancelled";
-	}
 
 	const filePath = resolveLayerWritePath(ctx, layer, deps);
 	if (!filePath) {
@@ -832,7 +995,7 @@ async function editListField(
 	for (;;) {
 		const settings = deps.getSettings();
 		const items = [...field.arrayAccess.getEffective(settings)];
-		const inheritedItems = computeInheritedListItems(ctx, layer, field, deps);
+		const inheritedItems = computeInheritedArrayItems(ctx, layer, field, deps);
 		const action = await listEditorView(ctx, {
 			field,
 			layer,
@@ -844,25 +1007,27 @@ async function editListField(
 			return anySaved ? "saved" : "cancelled";
 		}
 		if (action.kind === "add") {
-			const newItem = await promptInputRaw(ctx, {
+			const rawItem = await promptInputRaw(ctx, {
 				title: `${field.label}: add item`,
 				help: field.help,
 				initial: "",
 			});
-			if (newItem === null || newItem.trim().length === 0) continue;
+			if (rawItem === null || rawItem.trim().length === 0) continue;
 			try {
+				const parsedItem = field.arrayAccess.parseInput(rawItem);
+				const renderedItem = field.arrayAccess.renderItem(parsedItem);
 				const { written } = modifySettingArrayField({
 					filePath,
 					read: field.arrayAccess.readPartial,
 					write: field.arrayAccess.writePartial,
 					inheritedItems,
-					op: { kind: "append", item: newItem.trim() },
+					op: { kind: "append", item: parsedItem },
 				});
 				anySaved = true;
 				selectedIndex = Math.max(0, written.length - 1);
 				ctx.ui.notify(
 					formatSavedSettingNotification(
-						`${field.label}: added "${newItem.trim()}"`,
+						`${field.label}: added "${renderedItem}"`,
 						renderListSummary(written),
 						layer,
 						filePath,
@@ -892,7 +1057,7 @@ async function editListField(
 				selectedIndex = Math.min(action.index, Math.max(0, written.length - 1));
 				ctx.ui.notify(
 					formatSavedSettingNotification(
-						`${field.label}: removed "${removed}"`,
+						`${field.label}: removed "${field.arrayAccess.renderItem(removed)}"`,
 						renderListSummary(written),
 						layer,
 						filePath,
@@ -915,13 +1080,21 @@ type ListEditorAction =
 	| { kind: "add" }
 	| { kind: "remove"; index: number };
 
-async function listEditorView(
+function arrayItemEquals<T>(left: T, right: T | undefined): boolean {
+	if (right === undefined) return false;
+	if (Array.isArray(left) && Array.isArray(right)) {
+		return left.length === right.length && left.every((v, i) => v === right[i]);
+	}
+	return left === right;
+}
+
+async function listEditorView<T>(
 	ctx: ExtensionContext,
 	args: {
-		field: FieldDescriptor;
+		field: ArrayFieldDescriptor<T>;
 		layer: EditableLayer;
-		items: readonly string[];
-		inheritedItems: readonly string[];
+		items: readonly T[];
+		inheritedItems: readonly T[];
 		initialIndex: number;
 	},
 ): Promise<ListEditorAction> {
@@ -936,7 +1109,7 @@ async function listEditorView(
 			? [{ value: EMPTY_SENTINEL, label: "(no items — press `a` to add)" }]
 			: items.map((item, i) => ({
 					value: `${i}`,
-					label: item,
+					label: field.arrayAccess.renderItem(item),
 				}));
 	return await ctx.ui.custom<ListEditorAction>((tui, theme, _kb, done) => {
 		const container = new Container();
@@ -959,7 +1132,7 @@ async function listEditorView(
 			layer === "per-project" &&
 			inheritedItems.length > 0 &&
 			items.length === inheritedItems.length &&
-			items.every((v, i) => v === inheritedItems[i])
+			items.every((v, i) => arrayItemEquals(v, inheritedItems[i]))
 		) {
 			container.addChild(
 				new Text(
