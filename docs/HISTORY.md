@@ -651,14 +651,36 @@ layers — first edit copies them)`. Save and refresh happen after every
 add/remove; the field picker shows the new item count when you return.
 
 `string[][]` fields (`extraSafeCommandPrefixes`,
-`sandbox.reviewOnlyCommandPrefixes`) stay JSON-only — they need a 2D
-editor that's out of scope for this change. See TODO.md.
+`sandbox.reviewOnlyCommandPrefixes`) stayed JSON-only in this first cut;
+they needed command-prefix-aware entry parsing rather than plain string
+items.
 
 No measurable change to reviewer behavior; this is configuration UX.
 Unit coverage in `tests/settings-store.test.ts` includes the file-unset
 vs. file-empty distinction, sandbox sub-field merges that must not
 drop sibling sandbox keys, and the `perProjectPath: null` skip used
 to compute the inherited value.
+
+### Command-prefix list editing in `/pi-auto-settings`
+
+Closed the remaining list-editing gap for the two `string[][]` settings:
+`extraSafeCommandPrefixes` and `sandbox.reviewOnlyCommandPrefixes` now
+appear in `/pi-auto-settings` as add/remove command-prefix lists. Each row
+is one argv prefix, rendered shell-style (`gh pr view`, quoting args with
+spaces). Adds accept either friendly shell-word input or exact JSON-array
+input such as `["cmd", "arg with spaces"]`; JSON is the escape hatch for
+argv entries that are awkward to spell in a one-line prompt.
+
+The implementation keeps the existing copy-on-first-edit inheritance
+semantics by reusing `modifySettingArrayField<T>` with a generic
+`ArrayAccess<T>` descriptor. `reviewOnlyCommandPrefixes` is written under
+the nested `sandbox` object without dropping sibling sandbox settings, so
+adding `gh` through the UI produces the same JSON shape users previously
+had to write by hand.
+
+No runtime policy or sandbox routing behavior changed; this is UI-only.
+Unit coverage in `tests/settings-ui.test.ts` covers command-prefix parsing
+and rendering.
 
 ### Reviewer-gated unsandboxed command prefixes
 

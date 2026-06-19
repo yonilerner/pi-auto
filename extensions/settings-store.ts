@@ -31,6 +31,10 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import type { PiAutoSettings, SandboxSettings, SettingsLayer, SettingsLayerMap } from "./types.ts";
 
+export type PartialPiAutoSettings = Omit<Partial<PiAutoSettings>, "sandbox"> & {
+	sandbox?: Partial<SandboxSettings>;
+};
+
 /**
  * Filenames as written. Tests stub the resolved paths through `loadSettings`,
  * not these constants.
@@ -171,7 +175,7 @@ export function defaultPerProjectWritePath(cwd: string): string {
  */
 function readPartialSettings(
 	filePath: string,
-): { ok: true; parsed: Partial<PiAutoSettings> } | { ok: false; warning?: string } {
+): { ok: true; parsed: PartialPiAutoSettings } | { ok: false; warning?: string } {
 	if (!existsSync(filePath)) return { ok: false };
 	let raw: string;
 	try {
@@ -189,7 +193,7 @@ function readPartialSettings(
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		return { ok: false, warning: `pi-auto settings: ${filePath} must be a JSON object; ignoring` };
 	}
-	return { ok: true, parsed: parsed as Partial<PiAutoSettings> };
+	return { ok: true, parsed: parsed as PartialPiAutoSettings };
 }
 
 /**
@@ -199,7 +203,7 @@ function readPartialSettings(
  */
 function applyLayer(
 	accumulator: PiAutoSettings,
-	partial: Partial<PiAutoSettings>,
+	partial: PartialPiAutoSettings,
 	layer: SettingsLayer,
 	layers: SettingsLayerMap,
 ): void {
@@ -295,8 +299,8 @@ export function saveSettingField<K extends keyof PiAutoSettings>(args: {
 }): void {
 	const { filePath, field, value } = args;
 	const existing = readPartialSettings(filePath);
-	const base: Partial<PiAutoSettings> = existing.ok ? { ...existing.parsed } : {};
-	// biome-ignore lint/suspicious/noExplicitAny: assignment into Partial<PiAutoSettings>[field]
+	const base: PartialPiAutoSettings = existing.ok ? { ...existing.parsed } : {};
+	// biome-ignore lint/suspicious/noExplicitAny: assignment into PartialPiAutoSettings[field]
 	(base as any)[field] = value;
 	const dir = path.dirname(filePath);
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -374,14 +378,14 @@ export function nextArrayForRemove<T>(
  */
 export function modifySettingArrayField<T>(args: {
 	filePath: string;
-	read: (partial: Partial<PiAutoSettings>) => readonly T[] | undefined;
-	write: (partial: Partial<PiAutoSettings>, value: T[]) => void;
+	read: (partial: PartialPiAutoSettings) => readonly T[] | undefined;
+	write: (partial: PartialPiAutoSettings, value: T[]) => void;
 	inheritedItems: readonly T[];
 	op: { kind: "append"; item: T } | { kind: "remove"; index: number };
 }): { written: T[] } {
 	const existing = readPartialSettings(args.filePath);
-	const base: Partial<PiAutoSettings> = existing.ok ? { ...existing.parsed } : {};
-	if (base.sandbox) base.sandbox = { ...base.sandbox } as SandboxSettings;
+	const base: PartialPiAutoSettings = existing.ok ? { ...existing.parsed } : {};
+	if (base.sandbox) base.sandbox = { ...base.sandbox };
 	const currentInFile = args.read(base);
 	const next =
 		args.op.kind === "append"

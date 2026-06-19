@@ -27,16 +27,6 @@ the completed-work log lives in HISTORY.md.
       vs. spliced into `customPolicy`) against the live scenario set
       before settling. Pick this up alongside eval-set scaling (below).
 
-- [ ] **2D list editor for `string[][]` settings.** The settings UI
-      currently handles `string[]` list fields (sensitivePathPatterns,
-      sandbox allow/deny arrays) but not the two `string[][]` fields:
-      `extraSafeCommandPrefixes` and `sandbox.reviewOnlyCommandPrefixes`.
-      Each entry is a per-prefix argv (e.g. `["npm", "test"]`), so
-      editing needs a two-stage view: pick a prefix, then edit its argv
-      list. Same copy-inherited-on-first-add semantics as the existing
-      `string[]` editor (`nextArrayForAppend`). Until this lands these
-      two fields stay JSON-only.
-
 ## Reviewer architecture
 
 - [ ] **Two-stage classifier.** Anthropic's auto mode
