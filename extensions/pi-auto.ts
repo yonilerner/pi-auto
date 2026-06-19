@@ -147,6 +147,14 @@ interface WrappedBashState {
 	/** Original source text for each segment that was actually wrapped with ASRT. */
 	sandboxedCommands?: string[];
 	/**
+	 * Number of ASRT wrapWithSandbox() calls represented by this single bash
+	 * tool result. Usually 1, but mixed review-only routing can pre-wrap
+	 * multiple sandboxed AND/OR segments into one shell command. ASRT increments
+	 * its Linux cleanup counter per wrap, so the tool_result path must call the
+	 * matching cleanup once per wrap.
+	 */
+	sandboxWrapCount: number;
+	/**
 	 * `Date.now()` captured at tool_call time. Used to scope the
 	 * ASRT-callback-captured network attempts to just this command's lifetime
 	 * when building the escape-review retry_reason in the tool_result handler.
@@ -359,7 +367,7 @@ export default function (pi: ExtensionAPI): void {
 		const wrap = wrappedBashByToolCallId.get(event.toolCallId);
 		if (!wrap) return undefined;
 		wrappedBashByToolCallId.delete(event.toolCallId);
-		cleanupAfterSandboxCommand();
+		cleanupAfterSandboxCommands(wrap.sandboxWrapCount);
 
 		const combinedOutput = extractTextContent(event);
 		const denial = detectSandboxDenialForCommands(
@@ -583,6 +591,7 @@ export default function (pi: ExtensionAPI): void {
 					mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
 					mixedReviewOnlySequence: true,
 					sandboxedCommands: rewritten.sandboxedCommands,
+					sandboxWrapCount: rewritten.sandboxWrapCount,
 					startTime: Date.now(),
 				});
 				return undefined;
@@ -647,6 +656,7 @@ export default function (pi: ExtensionAPI): void {
 			wrappedBashByToolCallId.set(event.toolCallId, {
 				originalCommand,
 				mode: settings.sandbox.mode === "review-then-escape" ? "review-then-escape" : "escape-only",
+				sandboxWrapCount: 1,
 				startTime: Date.now(),
 			});
 			return undefined;
@@ -1123,19 +1133,32 @@ async function buildMixedReviewOnlySequenceCommand(
 	segments: readonly MixedReviewOnlySegment[],
 	cwd: string,
 	sandbox: SandboxSettings,
-): Promise<{ command: string; sandboxedCommands: string[] }> {
+): Promise<{ command: string; sandboxedCommands: string[]; sandboxWrapCount: number }> {
 	const out: string[] = [];
 	const sandboxedCommands: string[] = [];
-	for (const segment of segments) {
-		if (segment.operatorBefore) out.push(segment.operatorBefore);
-		if (segment.route === "review-only") {
-			out.push(segment.source);
-		} else {
-			sandboxedCommands.push(segment.source);
-			out.push(await wrapBashCommand(segment.source, cwd, sandbox));
+	let sandboxWrapCount = 0;
+	try {
+		for (const segment of segments) {
+			if (segment.operatorBefore) out.push(segment.operatorBefore);
+			if (segment.route === "review-only") {
+				out.push(segment.source);
+			} else {
+				sandboxedCommands.push(segment.source);
+				out.push(await wrapBashCommand(segment.source, cwd, sandbox));
+				sandboxWrapCount++;
+			}
 		}
+	} catch (err) {
+		cleanupAfterSandboxCommands(sandboxWrapCount);
+		throw err;
 	}
-	return { command: out.join(" "), sandboxedCommands };
+	return { command: out.join(" "), sandboxedCommands, sandboxWrapCount };
+}
+
+function cleanupAfterSandboxCommands(count: number): void {
+	for (let i = 0; i < count; i++) {
+		cleanupAfterSandboxCommand();
+	}
 }
 
 export function formatMixedReviewOnlyRoutingNotice(segments: readonly MixedReviewOnlySegment[]): string {

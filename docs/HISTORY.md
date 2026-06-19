@@ -650,6 +650,20 @@ A normal-level routing notice lists each segment as `review-only/bare` or
 `sandboxed` so the single reviewer approval is visibly paired with the
 per-segment execution route.
 
+### Mixed-sequence Linux cleanup accounting
+
+The mixed `&&` / `||` router exposed a Linux cleanup-counter mismatch:
+it calls ASRT `wrapWithSandbox()` once per sandboxed segment, but the
+single bash `tool_result` handler only called
+`cleanupAfterSandboxCommand()` once. Any mixed chain with two or more
+sandboxed segments could leave ASRT's active sandbox counter positive,
+deferring removal of mandatory-deny mount-point placeholders
+(`.bashrc`, `.gitconfig`, `.claude/agents`, etc.) until session reset.
+pi-auto now records the number of ASRT wraps represented by a bash tool
+call and calls cleanup once per wrap; if building a mixed command fails
+after earlier segments were wrapped, it also cleans up those partial
+wraps before returning the block.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).
