@@ -664,6 +664,35 @@ call and calls cleanup once per wrap; if building a mixed command fails
 after earlier segments were wrapped, it also cleans up those partial
 wraps before returning the block.
 
+### Exact ASRT command keys for sandbox annotations
+
+Linux annotation support in ASRT made the annotation-store key matter on
+all supported platforms: `annotateStderrWithSandboxFailures()` must be
+called with the exact command string passed to `wrapWithSandbox()`. That
+is not always the user-visible bash command in pi-auto, because the Linux
+path prepends generated git-excludes environment variables before
+wrapping. pi-auto now returns/stores both strings from its wrapping helper
+and uses the ASRT input string for later annotation lookup, including each
+sandboxed segment in mixed review-only chains. Escape review still reports
+and, when approved, re-runs the original user-visible command.
+
+The first Linux e2e probe also showed that the strace-backed store records
+ordinary failed startup probes (`ENOENT` for missing locale files and
+`/etc/ld.so.preload`, `ENXIO` for `/dev/tty`) alongside real denials.
+Those Linux failed-syscall noise lines are now filtered like the existing
+macOS sysctl/mach-lookup noise, while `EACCES`/`EPERM` file-read/write
+lines remain denial evidence. Linux `Permission denied` stderr is parsed
+for the retry reason so explicit reads like `/etc/passwd` do not degrade
+to the generic `Sandbox denied this command.` fallback.
+
+A follow-up e2e run exposed a key-collision variant: ASRT encodes only the
+first part of the command for violation lookup, and pi-auto's Linux git
+excludes injection put the same long `export GIT_CONFIG_*` prelude before
+every command. A network denial from `curl` could therefore annotate a
+later `echo hi` baseline. The injected command now starts with a no-op
+per-command hash marker before the common export block, making ASRT's
+truncated key unique while preserving the environment setup.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).

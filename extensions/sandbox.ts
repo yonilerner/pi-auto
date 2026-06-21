@@ -290,14 +290,52 @@ export async function shutdownSandbox(state: { current: SandboxState }): Promise
  * we don't need to add any quoting ourselves; we hand the raw command string
  * through.
  */
+export interface WrappedSandboxCommand {
+	/** The exact command string handed to ASRT's wrapWithSandbox(). */
+	sandboxCommand: string;
+	/** The shell command returned by ASRT and executed by pi's bash tool. */
+	wrappedCommand: string;
+}
+
+/**
+ * Return the exact command string that should be handed to ASRT.
+ *
+ * This is usually the user's original bash command. On Linux, pi-auto prepends
+ * git-excludes environment variables before wrapping so ASRT's mandatory-deny
+ * mount placeholders do not appear to nested git/but/gh commands. ASRT's
+ * violation annotation lookup is keyed by the command passed to
+ * wrapWithSandbox(), so callers that later call
+ * annotateStderrWithSandboxFailures() must retain this exact string.
+ */
+export function buildSandboxCommand(
+	command: string,
+	cwd: string = process.cwd(),
+	sandbox?: SandboxSettings,
+): string {
+	if (sandbox) applyDangerousFilesPolicy(sandbox);
+	return isLinuxPlatform() ? withSandboxGitExcludes(command, cwd) : command;
+}
+
+/**
+ * Wrap a single bash command and return both ASRT strings: the command that was
+ * passed into wrapWithSandbox() and the executable wrapper it returned.
+ */
+export async function wrapBashCommandForExecution(
+	command: string,
+	cwd: string = process.cwd(),
+	sandbox?: SandboxSettings,
+): Promise<WrappedSandboxCommand> {
+	const sandboxCommand = buildSandboxCommand(command, cwd, sandbox);
+	const wrappedCommand = await SandboxManager.wrapWithSandbox(sandboxCommand);
+	return { sandboxCommand, wrappedCommand };
+}
+
 export async function wrapBashCommand(
 	command: string,
 	cwd: string = process.cwd(),
 	sandbox?: SandboxSettings,
 ): Promise<string> {
-	if (sandbox) applyDangerousFilesPolicy(sandbox);
-	const commandForSandbox = isLinuxPlatform() ? withSandboxGitExcludes(command, cwd) : command;
-	return SandboxManager.wrapWithSandbox(commandForSandbox);
+	return (await wrapBashCommandForExecution(command, cwd, sandbox)).wrappedCommand;
 }
 
 /**
@@ -338,7 +376,11 @@ export function withSandboxGitExcludes(
 	const exports = assignments
 		.map(([key, value]) => `export ${key}=${shellSingleQuote(value)}`)
 		.join("\n");
-	return `${exports}\n${command}`;
+	// ASRT keys violation annotations by a truncated encoding of the command it
+	// receives. Put a per-command no-op marker before the common export prelude so
+	// different sandboxed commands do not collide in ASRT's violation store.
+	const annotationKey = createHash("sha256").update(command).digest("hex").slice(0, 16);
+	return `: ${shellSingleQuote(`pi-auto-asrt-key ${annotationKey}`)}\n${exports}\n${command}`;
 }
 
 export function getAsrtMandatoryDenyGitExcludePatterns(): string[] {
@@ -538,6 +580,9 @@ export function detectSandboxDenial(
 		["connect tunnel failed", "network denied by sandbox (proxy)"],
 		// Node's default fetch / undici error when proxy blocks:
 		["fetch failed", "network denied by sandbox"],
+		// Linux strace-backed annotation lines from ASRT:
+		["linux file-read denied", "filesystem operation denied by sandbox"],
+		["linux file-write denied", "filesystem operation denied by sandbox"],
 		// Generic catch-all (kept last so the more specific markers above win):
 		["operation not permitted", "filesystem operation denied by sandbox"],
 	];
@@ -620,6 +665,7 @@ export function filterNoiseFromAnnotation(annotated: string, original: string): 
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 		if (NOISE_OPERATIONS.some((needle) => trimmed.includes(needle))) continue;
+		if (isLinuxFailedSyscallNoise(trimmed)) continue;
 		kept.push(line);
 	}
 	if (kept.length === 0) {
@@ -629,6 +675,16 @@ export function filterNoiseFromAnnotation(annotated: string, original: string): 
 	}
 	const newBody = `\n${kept.join("\n")}\n`;
 	return `${before}${openTag}${newBody}${closeTag}${after}`;
+}
+
+function isLinuxFailedSyscallNoise(line: string): boolean {
+	if (!/^linux file-(?:read|write) denied:/i.test(line)) return false;
+	// The Linux tracer observes failed syscalls inside the sandbox. Some failures
+	// are ordinary process-startup probes rather than sandbox policy denials: a
+	// missing locale file, absent /etc/ld.so.preload, no controlling /dev/tty,
+	// etc. Keep EPERM/EACCES and other access-denial-shaped failures; drop only
+	// these non-permission errno values so baseline commands do not look denied.
+	return /->\s*(?:ENOENT|ENXIO)\b/i.test(line);
 }
 
 /**
@@ -781,7 +837,7 @@ export function extractDeniedPathFromStderr(
 	// Shape 1: bash redirection / cat / tee on macOS.
 	//   `/bin/bash: /Users/me/.ssh/test: Operation not permitted`
 	//   `cat: /etc/passwd: Operation not permitted`
-	const bashShape = /(?:^|\n)\s*[^\n:]+:\s+([^\n:]+):\s+Operation not permitted/i;
+	const bashShape = /(?:^|\n)\s*[^\n:]+:\s+([^\n:]+):\s+(?:Operation not permitted|Permission denied)/i;
 	let m = bashShape.exec(combinedOutput);
 	if (m?.[1]) {
 		const stripped = normalizeDeniedPathCandidate(m[1]);
@@ -813,11 +869,22 @@ export function extractDeniedFilesystemViolation(
 	combinedOutput: string,
 ): DeniedFilesystemViolation | undefined {
 	for (const line of combinedOutput.split("\n")) {
-		const m = /\bdeny\(\d+\)\s+(file-(write|read)-[a-z-]+)\s+(.+)$/i.exec(line.trim());
-		if (!m?.[1] || !m[2] || !m[3]) continue;
-		const path = normalizeDeniedPathCandidate(m[3]);
-		if (!path) continue;
-		return { operation: m[1], access: m[2].toLowerCase() as "read" | "write", path };
+		const trimmed = line.trim();
+		let m = /\bdeny\(\d+\)\s+(file-(write|read)-[a-z-]+)\s+(.+)$/i.exec(trimmed);
+		if (m?.[1] && m[2] && m[3]) {
+			const path = normalizeDeniedPathCandidate(m[3]);
+			if (!path) continue;
+			return { operation: m[1], access: m[2].toLowerCase() as "read" | "write", path };
+		}
+
+		m = /\blinux file-(read|write) denied:\s+([a-z0-9_]+)\("([^"]+)"\)\s*->\s*([A-Z0-9_]+)/i.exec(trimmed);
+		if (m?.[1] && m[2] && m[3] && m[4]) {
+			if (isLinuxFailedSyscallNoise(trimmed)) continue;
+			const path = normalizeDeniedPathCandidate(m[3]);
+			if (!path) continue;
+			const access = m[1].toLowerCase() as "read" | "write";
+			return { operation: `linux file-${access} ${m[2]} ${m[4]}`, access, path };
+		}
 	}
 	return undefined;
 }
