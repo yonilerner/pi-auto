@@ -250,6 +250,7 @@ Trade-off: each entry removed is one fewer guard against shell-rc / config-file 
 - `/pi-auto-enable` — re-enable review.
 - `/pi-auto-toggle-announce` — cycle `noticeLevel` through silent / denials / normal / verbose. Live, in-session only. Prefer `/pi-auto-settings` for persistent changes.
 - `/pi-auto-sandbox` — show sandbox mode, configuration, and recent denials.
+- `/pi-auto-sandbox-log [count]` (aliases: `/sandbox-log`, `/sandbox-review-log`) — show the last N in-memory sandbox denials with the annotated sandbox output and escape-review result. Defaults to 10 entries, capped at 50.
 
 ## Upstream sync
 

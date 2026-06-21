@@ -693,6 +693,17 @@ later `echo hi` baseline. The injected command now starts with a no-op
 per-command hash marker before the common export block, making ASRT's
 truncated key unique while preserving the environment setup.
 
+### In-memory sandbox review log
+
+Added `/pi-auto-sandbox-log [count]` (aliases `/sandbox-log` and
+`/sandbox-review-log`) because the normal denial notices made it too hard
+to tell which sandbox annotation triggered an escape review and how the
+review resolved. The log is intentionally session-local memory only: each
+entry records the original command, sandboxed segments when applicable,
+the denial label, retry reason, annotated sandbox output tail, reviewer
+outcome/rationale, and escape re-run status when allowed. The command
+defaults to the last 10 entries and caps display at 50.
+
 ## Open work
 
 See [`TODO.md`](../TODO.md).

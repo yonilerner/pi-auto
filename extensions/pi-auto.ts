@@ -16,6 +16,7 @@
 
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -170,6 +171,32 @@ interface WrappedBashState {
 	startTime: number;
 }
 
+export interface SandboxReviewLogEntry {
+	at: number;
+	command: string;
+	sandboxedCommands?: string[];
+	denialReason: string;
+	retryReason: string;
+	sandboxOutput: string;
+	mixedReviewOnlySequence?: boolean;
+	review:
+		| { outcome: "skipped"; note: string }
+		| { outcome: "failed"; reason: string }
+		| {
+				outcome: "allow" | "deny";
+				riskLevel: ReviewerAssessment["risk_level"];
+				userAuthorization: ReviewerAssessment["user_authorization"];
+				rationale: string;
+			};
+	escapeRerun?: {
+		exitCode: number | null;
+		signal: NodeJS.Signals | null;
+		durationMs: number;
+	};
+}
+
+const SANDBOX_LOG_OUTPUT_CHARS = 4_000;
+
 export default function (pi: ExtensionAPI): void {
 	// Live settings + layer attribution. Both start at DEFAULT_SETTINGS until
 	// session_start runs loadSettings() with the resolved project root, then
@@ -203,6 +230,11 @@ export default function (pi: ExtensionAPI): void {
 	// Most-recent sandbox-denial info, surfaced by /pi-auto-sandbox.
 	const recentDenials: Array<{ command: string; reason: string; escapedAllow: boolean; at: number }> = [];
 	const RECENT_DENIAL_CAP = 10;
+	// Rich in-memory sandbox failure / escape-review log, surfaced by
+	// /pi-auto-sandbox-log. Kept in memory only so it cannot leak across sessions
+	// or write sensitive command output to disk.
+	const sandboxReviewLog: SandboxReviewLogEntry[] = [];
+	const SANDBOX_REVIEW_LOG_CAP = 50;
 
 	// Track the current turn so we can scope the circuit breaker per turn.
 	let currentTurnId = "boot";
@@ -403,6 +435,19 @@ export default function (pi: ExtensionAPI): void {
 
 		if (wrap.mixedReviewOnlySequence) {
 			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
+			recordSandboxReviewLog({
+				at: Date.now(),
+				command: wrap.originalCommand,
+				sandboxedCommands: wrap.sandboxedCommands,
+				denialReason: denial.reason,
+				retryReason,
+				sandboxOutput: evidence,
+				mixedReviewOnlySequence: true,
+				review: {
+					outcome: "skipped",
+					note: "mixed review-only/sandboxed sequence; not retried because that would unsandbox non-review-only segments",
+				},
+			});
 			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
 				ctx.ui.notify(
 					`pi-auto: ${retryReason} Not retrying the mixed review-only sequence outside the sandbox.`,
@@ -445,6 +490,15 @@ export default function (pi: ExtensionAPI): void {
 
 		if (reviewResult.kind === "failed") {
 			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
+			recordSandboxReviewLog({
+				at: Date.now(),
+				command: wrap.originalCommand,
+				sandboxedCommands: wrap.sandboxedCommands,
+				denialReason: denial.reason,
+				retryReason,
+				sandboxOutput: evidence,
+				review: { outcome: "failed", reason: reviewResult.reason },
+			});
 			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
 				ctx.ui.notify(
 					`pi-auto: ${retryReason} (escape reviewer unavailable: ${reviewResult.reason}; leaving sandbox error in place)`,
@@ -457,6 +511,20 @@ export default function (pi: ExtensionAPI): void {
 		const { assessment } = reviewResult;
 		if (assessment.outcome === "deny") {
 			recordDenial(wrap.originalCommand, retryReason, /*escapedAllow*/ false);
+			recordSandboxReviewLog({
+				at: Date.now(),
+				command: wrap.originalCommand,
+				sandboxedCommands: wrap.sandboxedCommands,
+				denialReason: denial.reason,
+				retryReason,
+				sandboxOutput: evidence,
+				review: {
+					outcome: "deny",
+					riskLevel: assessment.risk_level,
+					userAuthorization: assessment.user_authorization,
+					rationale: assessment.rationale,
+				},
+			});
 			if (ctx.hasUI && shouldNotify(settings.noticeLevel, "denials")) {
 				ctx.ui.notify(
 					`pi-auto ✕ ${retryReason} Reviewer denied escape (${assessment.risk_level}/${assessment.user_authorization}): ${assessment.rationale}`,
@@ -494,6 +562,25 @@ export default function (pi: ExtensionAPI): void {
 		setStatus(ctx, "re-running outside sandbox…");
 		try {
 			const bare = await runBareCommand(wrap.originalCommand, ctx.cwd, ctx.signal);
+			recordSandboxReviewLog({
+				at: Date.now(),
+				command: wrap.originalCommand,
+				sandboxedCommands: wrap.sandboxedCommands,
+				denialReason: denial.reason,
+				retryReason,
+				sandboxOutput: evidence,
+				review: {
+					outcome: "allow",
+					riskLevel: assessment.risk_level,
+					userAuthorization: assessment.user_authorization,
+					rationale: assessment.rationale,
+				},
+				escapeRerun: {
+					exitCode: bare.exitCode,
+					signal: bare.signal,
+					durationMs: bare.durationMs,
+				},
+			});
 			clearStatus(ctx);
 			return {
 				content: [
@@ -505,6 +592,20 @@ export default function (pi: ExtensionAPI): void {
 				isError: bare.exitCode !== 0,
 			};
 		} catch (err) {
+			recordSandboxReviewLog({
+				at: Date.now(),
+				command: wrap.originalCommand,
+				sandboxedCommands: wrap.sandboxedCommands,
+				denialReason: denial.reason,
+				retryReason,
+				sandboxOutput: evidence,
+				review: {
+					outcome: "allow",
+					riskLevel: assessment.risk_level,
+					userAuthorization: assessment.user_authorization,
+					rationale: assessment.rationale,
+				},
+			});
 			clearStatus(ctx);
 			return {
 				content: [
@@ -686,6 +787,16 @@ export default function (pi: ExtensionAPI): void {
 		}
 	}
 
+	function recordSandboxReviewLog(entry: SandboxReviewLogEntry): void {
+		sandboxReviewLog.push({
+			...entry,
+			sandboxOutput: tail(entry.sandboxOutput, SANDBOX_LOG_OUTPUT_CHARS),
+		});
+		if (sandboxReviewLog.length > SANDBOX_REVIEW_LOG_CAP) {
+			sandboxReviewLog.splice(0, sandboxReviewLog.length - SANDBOX_REVIEW_LOG_CAP);
+		}
+	}
+
 	// Allow user to inspect/tweak settings at runtime.
 	pi.registerCommand("pi-auto", {
 		description: "Show pi-auto configuration and recent activity",
@@ -809,6 +920,22 @@ export default function (pi: ExtensionAPI): void {
 			}
 		},
 	});
+
+	const sandboxLogHandler = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+		const count = parseSandboxLogCount(args, 10);
+		const text = formatSandboxReviewLog(sandboxReviewLog, count);
+		if (ctx.hasUI) {
+			ctx.ui.notify(text, "info");
+		} else {
+			console.log(text);
+		}
+	};
+	for (const name of ["pi-auto-sandbox-log", "sandbox-log", "sandbox-review-log"] as const) {
+		pi.registerCommand(name, {
+			description: "Show recent in-memory sandbox denials and escape-review results (optional count; default 10)",
+			handler: sandboxLogHandler,
+		});
+	}
 
 	registerSettingsCommand(pi, {
 		getSettings: () => settings,
@@ -1253,6 +1380,79 @@ function couldMatchCommandPrefix(argvPrefix: readonly string[], prefix: readonly
 		if ((argvPrefix[i] ?? "") !== prefix[i]) return false;
 	}
 	return true;
+}
+
+export function parseSandboxLogCount(args: string, fallback = 10): number {
+	const trimmed = args.trim();
+	if (!trimmed) return fallback;
+	const first = trimmed.split(/\s+/, 1)[0] ?? "";
+	const parsed = Number.parseInt(first, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return Math.min(parsed, 50);
+}
+
+export function formatSandboxReviewLog(
+	entries: readonly SandboxReviewLogEntry[],
+	count = 10,
+): string {
+	if (entries.length === 0) {
+		return "pi-auto sandbox review log: empty";
+	}
+	const shown = entries.slice(-count).reverse();
+	const lines = [
+		`pi-auto sandbox review log: showing ${shown.length} of ${entries.length} entr${entries.length === 1 ? "y" : "ies"}`,
+	];
+	shown.forEach((entry, index) => {
+		lines.push("", `${index + 1}. [${new Date(entry.at).toISOString()}] ${formatSandboxReviewOutcome(entry)}`);
+		lines.push(`command: ${truncate(entry.command, 500)}`);
+		if (entry.sandboxedCommands && entry.sandboxedCommands.length > 0) {
+			lines.push(`sandboxed segment(s): ${entry.sandboxedCommands.map((c) => truncate(c, 160)).join(" | ")}`);
+		}
+		lines.push(`sandbox denial: ${entry.denialReason}`);
+		lines.push(`retry reason: ${entry.retryReason}`);
+		const review = entry.review;
+		switch (review.outcome) {
+			case "allow":
+			case "deny":
+				lines.push(`review: ${review.outcome} (${review.riskLevel}/${review.userAuthorization})`);
+				lines.push(`rationale: ${review.rationale}`);
+				break;
+			case "failed":
+				lines.push(`review: failed (${review.reason})`);
+				break;
+			case "skipped":
+				lines.push(`review: skipped (${review.note})`);
+				break;
+		}
+		if (entry.escapeRerun) {
+			const rerun = entry.escapeRerun;
+			lines.push(
+				`escape rerun: exit=${rerun.exitCode ?? "null"} signal=${rerun.signal ?? "null"} duration=${rerun.durationMs}ms`,
+			);
+		}
+		lines.push("sandbox output:");
+		lines.push(indentBlock(tail(entry.sandboxOutput, SANDBOX_LOG_OUTPUT_CHARS), "  "));
+	});
+	return lines.join("\n");
+}
+
+function formatSandboxReviewOutcome(entry: SandboxReviewLogEntry): string {
+	if (entry.review.outcome === "allow") return "escape ALLOWED";
+	if (entry.review.outcome === "deny") return "escape DENIED";
+	if (entry.review.outcome === "failed") return "escape REVIEW FAILED";
+	return entry.mixedReviewOnlySequence ? "sandbox DENIED; escape SKIPPED" : "sandbox DENIED";
+}
+
+function tail(s: string, n: number): string {
+	if (s.length <= n) return s;
+	return `…[last ${n} chars]\n${s.slice(-n)}`;
+}
+
+function indentBlock(s: string, prefix: string): string {
+	return s
+		.split("\n")
+		.map((line) => `${prefix}${line}`)
+		.join("\n");
 }
 
 function truncate(s: string, n: number): string {

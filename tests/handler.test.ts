@@ -7,9 +7,11 @@ import {
 	decideSandboxReviewOnlyPrefix,
 	fallbackToUser,
 	formatMixedReviewOnlyRoutingNotice,
+	formatSandboxReviewLog,
 	handleCircuitBreaker,
 	handleReviewResult,
 	matchesSandboxReviewOnlyPrefix,
+	parseSandboxLogCount,
 } from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
@@ -261,6 +263,41 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh issue list", [["gh", "pr"]]).kind).toBe("no-match");
 		expect(decideSandboxReviewOnlyPrefix("gh pr create --body $'x'", [["gh", "pr"]]).kind).toBe("unsupported");
 		expect(decideSandboxReviewOnlyPrefix("gh $(cat args)", [["gh", "pr"]]).kind).toBe("unsupported");
+	});
+});
+
+describe("sandbox review log formatting", () => {
+	it("parses an optional positive count with default and cap", () => {
+		expect(parseSandboxLogCount("")).toBe(10);
+		expect(parseSandboxLogCount("3")).toBe(3);
+		expect(parseSandboxLogCount("3 extra")).toBe(3);
+		expect(parseSandboxLogCount("0")).toBe(10);
+		expect(parseSandboxLogCount("nope")).toBe(10);
+		expect(parseSandboxLogCount("999")).toBe(50);
+	});
+
+	it("formats sandbox failure, review result, and sandbox output", () => {
+		const text = formatSandboxReviewLog([
+			{
+				at: Date.UTC(2026, 5, 19, 12, 0, 0),
+				command: "cat /etc/passwd",
+				denialReason: "filesystem operation denied by sandbox",
+				retryReason: "Sandbox denied filesystem read access to /etc/passwd.",
+				sandboxOutput: "cat: /etc/passwd: Permission denied\n<sandbox_violations>...",
+				review: {
+					outcome: "deny",
+					riskLevel: "high",
+					userAuthorization: "unknown",
+					rationale: "reading sensitive system file was not requested",
+				},
+			},
+		], 10);
+
+		expect(text).toContain("escape DENIED");
+		expect(text).toContain("cat /etc/passwd");
+		expect(text).toContain("filesystem operation denied by sandbox");
+		expect(text).toContain("review: deny (high/unknown)");
+		expect(text).toContain("Permission denied");
 	});
 });
 
