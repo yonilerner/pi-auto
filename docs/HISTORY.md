@@ -568,6 +568,26 @@ runtime so the next bash call reinitializes with the new config. Load
 warnings are printed in the reload result rather than requiring a pi
 restart to discover malformed files.
 
+### RPC is unmanned for fallback prompts unless the project is trusted
+
+Pi RPC mode sets `ctx.hasUI = true` because the RPC protocol supports
+extension UI requests/responses. That is correct for IDEs and custom
+clients, but unsafe for unattended jobs: pi-auto's reviewer-unavailable
+fallback and circuit-breaker override could emit `ctx.ui.select(...)`
+and then wait forever for an `extension_ui_response` that no human will
+send.
+
+Changed those fallback paths to treat `ctx.mode === "rpc"` as no
+interactive UI: reviewer failures block, and circuit-breaker trips abort
+and block. This keeps unmanned RPC fail-closed instead of hanging or
+silently approving.
+
+The same change disables the per-project `.agents/pi-auto.json` layer in
+RPC unless `ctx.isProjectTrusted()` is true. A saved trust decision or a
+one-shot `--approve` keeps per-project config available for trusted RPC
+jobs. Untrusted checkouts cannot weaken the global safety posture by
+checking in a pi-auto config file.
+
 ### Workspace-only default write roots
 
 Made the sandbox write-root default explicit in `DEFAULT_SETTINGS` by

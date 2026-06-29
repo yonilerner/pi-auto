@@ -90,9 +90,10 @@ export interface LoadSettingsOptions {
 	userGlobalPath?: string;
 	/**
 	 * Override per-project lookup. When provided, this exact path is used and
-	 * the upward walk is skipped. Tests use this to pin behavior.
+	 * the upward walk is skipped. Pass null to explicitly disable the per-project
+	 * settings layer, e.g. for unmanned RPC sessions in untrusted projects.
 	 */
-	perProjectPath?: string;
+	perProjectPath?: string | null;
 }
 
 /**

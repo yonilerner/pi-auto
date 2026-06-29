@@ -179,7 +179,17 @@ export default function (pi: ExtensionAPI): void {
 		// Load layered settings before anything else looks at them. Subsequent
 		// session_start handlers (sandbox availability, UI) will see merged
 		// settings. Errors and warnings surface as ui.notify.
-		const loaded = loadSettings({ defaults: DEFAULT_SETTINGS, cwd: ctx.cwd });
+		//
+		// RPC has a UI sub-protocol, but sessions are often unmanned. In that mode,
+		// do not let an untrusted checkout provide .agents/pi-auto.json and weaken
+		// the global safety posture. Passing --approve / a saved trust decision keeps
+		// per-project settings available for trusted RPC jobs.
+		const allowPerProjectSettings = !isRpcMode(ctx) || isTrustedProject(ctx);
+		const loaded = loadSettings({
+			defaults: DEFAULT_SETTINGS,
+			cwd: ctx.cwd,
+			...(allowPerProjectSettings ? {} : { perProjectPath: null }),
+		});
 		assignSettings(settings, loaded.settings);
 		settingsLayers = loaded.layers;
 		settingsPaths = loaded.paths;
@@ -772,10 +782,10 @@ export async function fallbackToUser(
 	reason: string,
 	ctx: ExtensionContext,
 ): Promise<ToolCallEventResult | undefined> {
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI || isRpcMode(ctx)) {
 		return {
 			block: true,
-			reason: `pi-auto reviewer unavailable and no UI for fallback: ${reason}`,
+			reason: `pi-auto reviewer unavailable and no interactive UI for fallback: ${reason}`,
 		};
 	}
 
@@ -812,7 +822,7 @@ export async function handleCircuitBreaker(
 		`Risk:             ${assessment.risk_level}, authorization: ${assessment.user_authorization}`,
 	].join("\n");
 
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI || isRpcMode(ctx)) {
 		ctx.abort();
 		return { block: true, reason: summary };
 	}
@@ -843,6 +853,15 @@ function formatDenyReason(action: ReviewableAction, assessment: ReviewerAssessme
 		``,
 		`Do not pursue the same outcome via workaround or indirect execution. Either find a materially safer alternative, or stop and ask the user.`,
 	].join("\n");
+}
+
+function isRpcMode(ctx: ExtensionContext): boolean {
+	return (ctx as ExtensionContext & { mode?: string }).mode === "rpc";
+}
+
+function isTrustedProject(ctx: ExtensionContext): boolean {
+	const maybeTrusted = (ctx as ExtensionContext & { isProjectTrusted?: () => boolean }).isProjectTrusted;
+	return typeof maybeTrusted === "function" ? maybeTrusted.call(ctx) : false;
 }
 
 function setStatus(ctx: ExtensionContext, text: string | undefined): void {
