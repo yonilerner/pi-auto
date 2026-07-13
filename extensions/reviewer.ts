@@ -3,7 +3,7 @@
  * fail-closes on any error.
  */
 
-import { completeSimple, parseJsonWithRepair, parseStreamingJson } from "@earendil-works/pi-ai";
+import { completeSimple, parseJsonWithRepair, parseStreamingJson } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildCodexAutoReviewSystemPrompt, buildCodexAutoReviewUserPrompt } from "./codex-prompt.ts";
 import { getLatestDigest } from "./digest.ts";
@@ -102,7 +102,10 @@ export async function reviewAction(
 	const t0 = Date.now();
 	try {
 		// codex-auto-review is fine-tuned for this task at "low" reasoning per OpenAI's blog.
-		const reasoningLevel = useCodexFormat ? "low" : "minimal";
+		// PI_AUTO_REVIEWER_REASONING overrides the default for benchmarking models that
+		// don't support "minimal" (e.g. gpt-5.6-luna returns empty responses at minimal).
+		const defaultReasoning = useCodexFormat ? "low" : "minimal";
+		const reasoningLevel = (process.env.PI_AUTO_REVIEWER_REASONING as typeof defaultReasoning | undefined) ?? defaultReasoning;
 		const response = await completeSimple(
 			model,
 			{

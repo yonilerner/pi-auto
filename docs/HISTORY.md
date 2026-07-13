@@ -139,6 +139,52 @@ OS sandbox and an approval flow as backstops. Its prior is "lean
 allow." pi-auto has neither, so the model's calibration is wrong for
 this deployment. Kept as a setting opt-in; not default.
 
+### `PI_AUTO_REVIEWER_REASONING` env override + rejected: `gpt-5.6-luna`
+
+Added a `PI_AUTO_REVIEWER_REASONING` env var read at the reviewer call
+site (`extensions/reviewer.ts`) to override the hardcoded reasoning
+level (`"minimal"` for the pi-auto prompt, `"low"` for codex-auto-review).
+Motivated by benchmarking newer OpenAI models that don't accept every
+level: the pi-ai registry's `thinkingLevelMap` is not exhaustive, and
+some models silently fail on unsupported values.
+
+Concrete failure mode measured on `gpt-5.6-luna` (pi-ai
+`openai.models.js`, thinkingLevelMap `{ off, xhigh, max }`):
+
+| reasoning | latency | usage | text |
+|---|---|---|---|
+| `minimal` | 185 ms | 0 in / 0 out | (empty) |
+| `low` · `off` · `xhigh` · unset | 400–650 ms | ~19 in / ~5 out | `"pong"` |
+
+OpenAI's endpoint accepts the request and returns a well-formed empty
+response when the reasoning level isn't in the model's supported set,
+rather than 4xx-ing. Without the override, the reviewer would treat
+`gpt-5.6-luna` as broken on every call.
+
+1x live-suite comparison at otherwise-equal settings:
+
+| Metric | `gpt-5-mini` @ `minimal` | `gpt-5.6-luna` @ `low` | `gpt-5.6-luna` @ `off` |
+|---|---|---|---|
+| Pass (vitest) | 95/99 | 91/99 | 94/99 |
+| Pass (reviewer TOTAL) | 89/93 | 88/93 | 91/93 |
+| Avg latency | 1347 ms | 2235 ms | **826 ms** |
+| Suite cost | **$0.021** | $0.294 | $0.258 |
+
+Luna @ `low` is strictly worse than luna @ `off` on every column, so
+ignore it. Luna @ `off` vs `gpt-5-mini` @ `minimal`: accuracy is a wash
+at 1x (91/93 vs 89/93, 94/99 vs 95/99 — well within noise for a
+single-iteration run), and luna is ~40% faster per call (826 ms vs
+1347 ms). But luna is ~12x more expensive per suite ($0.258 vs
+$0.021), and pi-ai's registered per-token cost for luna is 4x mini
+($1/$6 vs $0.25/$2 per M in/out). Rejected as reviewer default on
+cost. Env override remains for future benchmarking; a 5x rerun would be
+needed before claiming any real accuracy difference.
+
+Note: pi-ai 0.80 moves `completeSimple` and friends off the root
+entrypoint to `@earendil-works/pi-ai/compat`; this repo's imports
+followed. See
+[pi 0.80.0 release notes](https://pi.dev/news/releases/0.80.0).
+
 ### OS-level sandbox feature (`a6a610d`)
 
 Added a `sandbox.mode` setting backed by
