@@ -17,7 +17,7 @@
  * semantic authorization, retrieval catches exact-string proof.
  */
 
-import { completeSimple } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { PiAutoSettings } from "./types.ts";
 

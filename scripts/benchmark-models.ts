@@ -32,6 +32,10 @@ interface ModelSpec {
 	stripAssistantText?: boolean;
 	/** Strip tool_result entries from the transcript. PI_AUTO_STRIP_TOOL_RESULTS=1. */
 	stripToolResults?: boolean;
+	/** Override reasoning level via PI_AUTO_REVIEWER_REASONING. Use when the model
+	 * doesn't support the reviewer's default "minimal" (e.g. gpt-5.6-luna returns
+	 * empty responses at minimal). Comparable low-cost levels: "low" or "off". */
+	reasoning?: string;
 }
 
 const MODELS: ModelSpec[] = [
@@ -56,6 +60,21 @@ const MODELS: ModelSpec[] = [
 
 	// --- Other models, baseline transcript ---
 	{ provider: "openai", model: "gpt-5-nano", label: "gpt-5-nano (baseline)" },
+	// gpt-5.6-luna: doesn't support "minimal" reasoning (API silently returns
+	// empty). Compare against baseline at "low" (closest supported rung) and
+	// "off" (cheapest, closest cost/latency to baseline's "minimal").
+	{
+		provider: "openai",
+		model: "gpt-5.6-luna",
+		label: "gpt-5.6-luna (low)",
+		reasoning: "low",
+	},
+	{
+		provider: "openai",
+		model: "gpt-5.6-luna",
+		label: "gpt-5.6-luna (off)",
+		reasoning: "off",
+	},
 	{ provider: "openai", model: "gpt-4.1-mini", label: "gpt-4.1-mini (baseline)" },
 	{ provider: "anthropic", model: "claude-haiku-4-5", label: "claude-haiku-4-5 (baseline)" },
 	{
@@ -129,21 +148,34 @@ for (const spec of selected) {
 	else delete env.PI_AUTO_STRIP_ASSISTANT_TEXT;
 	if (spec.stripToolResults) env.PI_AUTO_STRIP_TOOL_RESULTS = "1";
 	else delete env.PI_AUTO_STRIP_TOOL_RESULTS;
+	if (spec.reasoning) env.PI_AUTO_REVIEWER_REASONING = spec.reasoning;
+	else delete env.PI_AUTO_REVIEWER_REASONING;
 
 	const result = spawnSync(
 		"./node_modules/.bin/vitest",
 		["run", "tests/live"],
 		{ env, encoding: "utf8" },
 	);
-	const out = (result.stdout || "") + (result.stderr || "");
-	process.stdout.write(out);
+	const rawOut = (result.stdout || "") + (result.stderr || "");
+	process.stdout.write(rawOut);
+	// Vitest colors the "Tests X passed (Y)" summary line when it detects a TTY
+	// (e.g. when this script is run under interactive_shell). Strip ANSI escapes
+	// before regex parsing so the pass-count regex matches in both cases.
+	// eslint-disable-next-line no-control-regex
+	const out = rawOut.replace(/\x1b\[[0-9;]*m/g, "");
 
-	const totalLine = out.match(/^TOTAL\s+\S+.*$/m)?.[0];
+	// The reviewer-scenarios test suite prints a TOTAL row with the shape:
+	//   TOTAL   <pass> <input> <output> <total> $<cost>   <avg_ms>
+	// (see reviewer-scenarios.test.ts:~1608). A shorter digest-summarizer TOTAL
+	// (just "TOTAL   <pass>/<total>") also appears — pick the reviewer-scenarios
+	// one by requiring the $cost column.
+	const totalLines = [...out.matchAll(/^TOTAL\s+.*$/gm)].map((m) => m[0]);
+	const totalLine = totalLines.reverse().find((l) => /\$[0-9.]+/.test(l));
 	const testsLine = out.match(/Tests\s+(\d+ failed \| )?(\d+) passed \((\d+)\)/);
 	const passSummary = testsLine ? `${testsLine[2]}/${testsLine[3]}` : "?/?";
 	const avgMatch = totalLine?.match(/(\d+)\s*$/);
 	const avgLatency = avgMatch ? Number(avgMatch[1]) : 0;
-	const costMatch = totalLine?.match(/\$([0-9.]+)\s+\d+\s*$/);
+	const costMatch = totalLine?.match(/\$([0-9.]+)/);
 	const cost = costMatch ? Number(costMatch[1]) : 0;
 	rows.push({
 		label: spec.label,

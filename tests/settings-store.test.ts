@@ -207,6 +207,34 @@ describe("loadSettings", () => {
 		expect(loaded.layers.reviewerPolicySource).toBe("env");
 	});
 
+	it("PI_AUTO_REVIEWER_REASONING overrides reviewerReasoning when the value is recognized", () => {
+		const userPath = path.join(workdir, "user.json");
+		writeJson(userPath, { reviewerReasoning: "low" });
+		const loaded = loadSettings({
+			defaults: DEFAULTS,
+			cwd: workdir,
+			env: { PI_AUTO_REVIEWER_REASONING: "off" } as NodeJS.ProcessEnv,
+			userGlobalPath: userPath,
+			perProjectPath: undefined,
+		});
+		expect(loaded.settings.reviewerReasoning).toBe("off");
+		expect(loaded.layers.reviewerReasoning).toBe("env");
+	});
+
+	it("PI_AUTO_REVIEWER_REASONING ignores unrecognized values (lets lower layers win)", () => {
+		const userPath = path.join(workdir, "user.json");
+		writeJson(userPath, { reviewerReasoning: "low" });
+		const loaded = loadSettings({
+			defaults: DEFAULTS,
+			cwd: workdir,
+			env: { PI_AUTO_REVIEWER_REASONING: "bogus" } as NodeJS.ProcessEnv,
+			userGlobalPath: userPath,
+			perProjectPath: undefined,
+		});
+		expect(loaded.settings.reviewerReasoning).toBe("low");
+		expect(loaded.layers.reviewerReasoning).toBe("user-global");
+	});
+
 	it("ignores unset env vars (lets lower layers win)", () => {
 		const userPath = path.join(workdir, "user.json");
 		writeJson(userPath, { reviewerPolicySource: "codex-verbatim" });
@@ -382,10 +410,13 @@ describe("defaultPerProjectWritePath", () => {
 });
 
 describe("env-var registry", () => {
-	it("currently lists exactly the one supported override (PI_AUTO_USE_CODEX_POLICY)", () => {
+	it("lists exactly the currently-supported overrides", () => {
 		// If you add another env var, also add it to the table and update
 		// this assertion. The intent is to keep one canonical list rather
 		// than scattering process.env reads across modules; see TODO.md.
-		expect(_envVarsForTest()).toEqual(["PI_AUTO_USE_CODEX_POLICY"]);
+		expect(_envVarsForTest()).toEqual([
+			"PI_AUTO_USE_CODEX_POLICY",
+			"PI_AUTO_REVIEWER_REASONING",
+		]);
 	});
 });

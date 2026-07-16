@@ -139,6 +139,59 @@ OS sandbox and an approval flow as backstops. Its prior is "lean
 allow." pi-auto has neither, so the model's calibration is wrong for
 this deployment. Kept as a setting opt-in; not default.
 
+### `reviewerReasoning` setting + rejected: `gpt-5.6-luna`
+
+Added a `reviewerReasoning` setting (default `"auto"`) that controls the
+reasoning-effort level passed to the reviewer model. `"auto"` preserves
+the historical hardcoded behavior (`"low"` for codex-auto-review per
+OpenAI's fine-tuning, `"minimal"` otherwise). Other values
+(`off/minimal/low/medium/high/xhigh/max`) override for both paths.
+Env-var override `PI_AUTO_REVIEWER_REASONING` is registered in the
+canonical `ENV_VAR_OVERRIDES` table in `settings-store.ts` (not read
+ad-hoc in `reviewer.ts`, per the "one canonical list" contract in
+`TODO.md`).
+
+Motivated by benchmarking newer OpenAI models that don't accept every
+level: the pi-ai registry's `thinkingLevelMap` is not exhaustive, and
+some models silently fail on unsupported values.
+
+Concrete failure mode measured on `gpt-5.6-luna` (pi-ai
+`openai.models.js`, thinkingLevelMap `{ off, xhigh, max }`):
+
+| reasoning | latency | usage | text |
+|---|---|---|---|
+| `minimal` | 185 ms | 0 in / 0 out | (empty) |
+| `low` · `off` · `xhigh` · unset | 400–650 ms | ~19 in / ~5 out | `"pong"` |
+
+OpenAI's endpoint accepts the request and returns a well-formed empty
+response when the reasoning level isn't in the model's supported set,
+rather than 4xx-ing. Without the override, the reviewer would treat
+`gpt-5.6-luna` as broken on every call.
+
+5x live-suite comparison at otherwise-equal settings (`gpt-5.6-luna` @
+`low` was strictly worse than `off` at 1x and was dropped):
+
+| Metric | `gpt-5-mini` @ `minimal` | `gpt-5.6-luna` @ `off` |
+|---|---|---|
+| Pass (vitest) | 467/483 (96.7%) | 459/483 (95.0%) |
+| Avg latency | 1136 ms | **860 ms** |
+| Suite cost | **$0.141** | $0.472 |
+
+At 5x the accuracy gap is small but consistent — ~1.7 percentage points
+favoring mini, not a wash. Luna is ~24% faster and ~3.35x more
+expensive per suite. The cost ratio shrank from 12x at 1x because
+prompt-cache reads dominate at 5x (both models: cacheRead = 10% of
+input), which mostly cancels mini's 4x input-price advantage; suite
+cost is dominated by output tokens where luna is 3x mini ($6 vs $2
+per M). Rejected as reviewer default on the combination of a
+measurable regression and higher cost. Setting remains for users who
+want the latency win at the accuracy/cost tradeoff.
+
+Note: pi-ai 0.80 moves `completeSimple` and friends off the root
+entrypoint to `@earendil-works/pi-ai/compat`; this repo's imports
+followed. See
+[pi 0.80.0 release notes](https://pi.dev/news/releases/0.80.0).
+
 ### OS-level sandbox feature (`a6a610d`)
 
 Added a `sandbox.mode` setting backed by

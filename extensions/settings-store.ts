@@ -54,6 +54,17 @@ interface EnvVarOverride {
 	apply: (raw: string | undefined, current: PiAutoSettings) => Partial<PiAutoSettings> | undefined;
 }
 
+const REVIEWER_REASONING_VALUES = new Set([
+	"auto",
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]);
+
 const ENV_VAR_OVERRIDES: EnvVarOverride[] = [
 	{
 		envVar: "PI_AUTO_USE_CODEX_POLICY",
@@ -62,6 +73,15 @@ const ENV_VAR_OVERRIDES: EnvVarOverride[] = [
 			if (raw === "1") return { reviewerPolicySource: "codex-verbatim" };
 			if (raw === "0") return { reviewerPolicySource: "default" };
 			return undefined;
+		},
+	},
+	{
+		envVar: "PI_AUTO_REVIEWER_REASONING",
+		field: "reviewerReasoning",
+		apply: (raw) => {
+			if (raw === undefined || raw === "") return undefined;
+			if (!REVIEWER_REASONING_VALUES.has(raw)) return undefined;
+			return { reviewerReasoning: raw as PiAutoSettings["reviewerReasoning"] };
 		},
 	},
 ];
