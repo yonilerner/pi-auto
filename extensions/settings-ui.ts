@@ -131,6 +131,22 @@ const FIELDS: FieldDescriptor[] = [
 		applyChange: (_s, raw) => raw.trim(),
 	},
 	{
+		id: "reviewerReasoning",
+		label: "Reviewer reasoning effort",
+		help: "auto = pi-auto picks (low for codex-auto-review, minimal otherwise). Override when the model doesn't accept the default — e.g. gpt-5.6-luna returns empty responses at minimal.",
+		kind: "enum",
+		enumValues: ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"],
+		settingsKey: "reviewerReasoning",
+		read: (s) => s.reviewerReasoning,
+		applyChange: (_s, raw) => {
+			const allowed = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+			if (!(allowed as readonly string[]).includes(raw)) {
+				throw new Error(`reviewerReasoning must be one of: ${allowed.join(", ")}`);
+			}
+			return raw as (typeof allowed)[number];
+		},
+	},
+	{
 		id: "fallbackToActiveModel",
 		label: "Fall back to active model",
 		help: "If reviewer model unavailable, use the session's current model.",

@@ -45,6 +45,10 @@ import type { PiAutoSettings, ReviewableAction, ReviewerAssessment, SandboxMode,
 const DEFAULT_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	// "auto" preserves the historical behavior (low for codex-auto-review,
+	// minimal otherwise). Override in the UI/JSON if the configured model
+	// doesn't accept minimal — gpt-5.6-luna is the current motivating case.
+	reviewerReasoning: "auto",
 	// Default false: an unintended fallback to the session model on a typo or
 	// outage is usually worse than the reviewer failing closed (we fall back
 	// to a user prompt). Users who want auto-fallback can opt in via

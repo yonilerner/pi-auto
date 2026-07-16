@@ -139,11 +139,18 @@ OS sandbox and an approval flow as backstops. Its prior is "lean
 allow." pi-auto has neither, so the model's calibration is wrong for
 this deployment. Kept as a setting opt-in; not default.
 
-### `PI_AUTO_REVIEWER_REASONING` env override + rejected: `gpt-5.6-luna`
+### `reviewerReasoning` setting + rejected: `gpt-5.6-luna`
 
-Added a `PI_AUTO_REVIEWER_REASONING` env var read at the reviewer call
-site (`extensions/reviewer.ts`) to override the hardcoded reasoning
-level (`"minimal"` for the pi-auto prompt, `"low"` for codex-auto-review).
+Added a `reviewerReasoning` setting (default `"auto"`) that controls the
+reasoning-effort level passed to the reviewer model. `"auto"` preserves
+the historical hardcoded behavior (`"low"` for codex-auto-review per
+OpenAI's fine-tuning, `"minimal"` otherwise). Other values
+(`off/minimal/low/medium/high/xhigh/max`) override for both paths.
+Env-var override `PI_AUTO_REVIEWER_REASONING` is registered in the
+canonical `ENV_VAR_OVERRIDES` table in `settings-store.ts` (not read
+ad-hoc in `reviewer.ts`, per the "one canonical list" contract in
+`TODO.md`).
+
 Motivated by benchmarking newer OpenAI models that don't accept every
 level: the pi-ai registry's `thinkingLevelMap` is not exhaustive, and
 some models silently fail on unsupported values.

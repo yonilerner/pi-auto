@@ -101,11 +101,21 @@ export async function reviewAction(
 
 	const t0 = Date.now();
 	try {
-		// codex-auto-review is fine-tuned for this task at "low" reasoning per OpenAI's blog.
-		// PI_AUTO_REVIEWER_REASONING overrides the default for benchmarking models that
-		// don't support "minimal" (e.g. gpt-5.6-luna returns empty responses at minimal).
-		const defaultReasoning = useCodexFormat ? "low" : "minimal";
-		const reasoningLevel = (process.env.PI_AUTO_REVIEWER_REASONING as typeof defaultReasoning | undefined) ?? defaultReasoning;
+		// codex-auto-review is fine-tuned for this task at "low" reasoning per
+		// OpenAI's blog. `settings.reviewerReasoning === "auto"` (default) picks
+		// that automatically; any other value overrides. Motivating case: gpt-5.6-luna
+		// returns empty responses at "minimal" (its thinkingLevelMap only exposes
+		// off/xhigh/max), so users can set the setting to "off" or "low" instead.
+		const reasoningLevel =
+			settings.reviewerReasoning === "auto"
+				? useCodexFormat
+					? "low"
+					: "minimal"
+				: settings.reviewerReasoning;
+		// pi-ai types `reasoning` as `ThinkingLevel` (which excludes "off"), but
+		// the runtime handles "off" fine — openai-responses.js maps it to
+		// `reasoningEffort=undefined` at the API layer. Cast to satisfy the type.
+		const reasoningForApi = reasoningLevel as "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 		const response = await completeSimple(
 			model,
 			{
@@ -123,7 +133,7 @@ export async function reviewAction(
 				headers,
 				signal: controller.signal,
 				maxTokens: 4096,
-				reasoning: reasoningLevel,
+				reasoning: reasoningForApi,
 			},
 		);
 
