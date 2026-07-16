@@ -168,24 +168,24 @@ response when the reasoning level isn't in the model's supported set,
 rather than 4xx-ing. Without the override, the reviewer would treat
 `gpt-5.6-luna` as broken on every call.
 
-1x live-suite comparison at otherwise-equal settings:
+5x live-suite comparison at otherwise-equal settings (`gpt-5.6-luna` @
+`low` was strictly worse than `off` at 1x and was dropped):
 
-| Metric | `gpt-5-mini` @ `minimal` | `gpt-5.6-luna` @ `low` | `gpt-5.6-luna` @ `off` |
-|---|---|---|---|
-| Pass (vitest) | 95/99 | 91/99 | 94/99 |
-| Pass (reviewer TOTAL) | 89/93 | 88/93 | 91/93 |
-| Avg latency | 1347 ms | 2235 ms | **826 ms** |
-| Suite cost | **$0.021** | $0.294 | $0.258 |
+| Metric | `gpt-5-mini` @ `minimal` | `gpt-5.6-luna` @ `off` |
+|---|---|---|
+| Pass (vitest) | 467/483 (96.7%) | 459/483 (95.0%) |
+| Avg latency | 1136 ms | **860 ms** |
+| Suite cost | **$0.141** | $0.472 |
 
-Luna @ `low` is strictly worse than luna @ `off` on every column, so
-ignore it. Luna @ `off` vs `gpt-5-mini` @ `minimal`: accuracy is a wash
-at 1x (91/93 vs 89/93, 94/99 vs 95/99 — well within noise for a
-single-iteration run), and luna is ~40% faster per call (826 ms vs
-1347 ms). But luna is ~12x more expensive per suite ($0.258 vs
-$0.021), and pi-ai's registered per-token cost for luna is 4x mini
-($1/$6 vs $0.25/$2 per M in/out). Rejected as reviewer default on
-cost. Env override remains for future benchmarking; a 5x rerun would be
-needed before claiming any real accuracy difference.
+At 5x the accuracy gap is small but consistent — ~1.7 percentage points
+favoring mini, not a wash. Luna is ~24% faster and ~3.35x more
+expensive per suite. The cost ratio shrank from 12x at 1x because
+prompt-cache reads dominate at 5x (both models: cacheRead = 10% of
+input), which mostly cancels mini's 4x input-price advantage; suite
+cost is dominated by output tokens where luna is 3x mini ($6 vs $2
+per M). Rejected as reviewer default on the combination of a
+measurable regression and higher cost. Setting remains for users who
+want the latency win at the accuracy/cost tradeoff.
 
 Note: pi-ai 0.80 moves `completeSimple` and friends off the root
 entrypoint to `@earendil-works/pi-ai/compat`; this repo's imports
