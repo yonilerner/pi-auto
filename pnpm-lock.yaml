@@ -12,11 +12,11 @@ importers:
         specifier: foxfire
         version: 0.0.55-foxfirecodes.3
       tree-sitter:
-        specifier: ^0.25.0
-        version: 0.25.0
+        specifier: ^0.25.1
+        version: 0.25.1
       tree-sitter-bash:
         specifier: ^0.25.1
-        version: 0.25.1(tree-sitter@0.25.0)
+        version: 0.25.1(tree-sitter@0.25.1)
     devDependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.74.2
@@ -1032,8 +1032,8 @@ packages:
       tree-sitter:
         optional: true
 
-  tree-sitter@0.25.0:
-    resolution: {integrity: sha512-PGZZzFW63eElZJDe/b/R/LbsjDDYJa5UEjLZJB59RQsMX+fo0j54fqBPn1MGKav/QNa0JR0zBiVaikYDWCj5KQ==}
+  tree-sitter@0.25.1:
+    resolution: {integrity: sha512-mrcEdkYtHfrK1A6fs3O6FxkBo0Qig5XUXqHhxUOQu0bmPo00QF4XaSx4edpazdHwxnSCjlGKGgIqWdaN4dvTLA==}
 
   ts-algebra@2.0.0:
     resolution: {integrity: sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==}
@@ -2161,14 +2161,14 @@ snapshots:
 
   tinyrainbow@3.1.0: {}
 
-  tree-sitter-bash@0.25.1(tree-sitter@0.25.0):
+  tree-sitter-bash@0.25.1(tree-sitter@0.25.1):
     dependencies:
       node-addon-api: 8.9.0
       node-gyp-build: 4.8.4
     optionalDependencies:
-      tree-sitter: 0.25.0
+      tree-sitter: 0.25.1
 
-  tree-sitter@0.25.0:
+  tree-sitter@0.25.1:
     dependencies:
       node-addon-api: 8.9.0
       node-gyp-build: 4.8.4
