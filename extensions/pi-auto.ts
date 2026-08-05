@@ -32,6 +32,7 @@ import {
 	detectSandboxDenialForCommand,
 	ensureSandboxReady,
 	getNetworkAttemptsSince,
+	bareExecResultToToolContent,
 	runBareCommand,
 	shutdownSandbox,
 	wrapBashCommand,
@@ -435,14 +436,10 @@ export default function (pi: ExtensionAPI): void {
 		try {
 			const bare = await runBareCommand(wrap.originalCommand, ctx.cwd, ctx.signal);
 			clearStatus(ctx);
+			const { text, isError } = bareExecResultToToolContent(bare);
 			return {
-				content: [
-					{
-						type: "text",
-						text: bare.stdout + (bare.stderr ? `\n[stderr]\n${bare.stderr}` : ""),
-					},
-				],
-				isError: bare.exitCode !== 0,
+				content: [{ type: "text", text }],
+				isError,
 			};
 		} catch (err) {
 			clearStatus(ctx);

@@ -38,6 +38,7 @@ import {
 	applyDangerousFilesPolicy,
 	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
+	bareExecResultToToolContent,
 	runBareCommand,
 	withSandboxGitExcludes,
 } from "../extensions/sandbox.ts";
@@ -911,6 +912,70 @@ describePosix("runBareCommand abort propagation", () => {
 		const elapsed = Date.now() - started;
 		expect(elapsed).toBeLessThan(2000);
 		expect(result.signal).toBeTruthy();
+	});
+});
+
+describe("bareExecResultToToolContent", () => {
+	it("passes through non-empty stdout+stderr with the [stderr] separator", () => {
+		const result = bareExecResultToToolContent({
+			stdout: "hello",
+			stderr: "warn",
+			exitCode: 0,
+			signal: null,
+			durationMs: 1,
+		});
+		expect(result.text).toBe("hello\n[stderr]\nwarn");
+		expect(result.isError).toBe(false);
+	});
+
+	it("omits the [stderr] block when stderr is empty", () => {
+		const result = bareExecResultToToolContent({
+			stdout: "output",
+			stderr: "",
+			exitCode: 0,
+			signal: null,
+			durationMs: 1,
+		});
+		expect(result.text).toBe("output");
+		expect(result.isError).toBe(false);
+	});
+
+	it("yields non-empty text and isError=true when both streams are empty and exit is non-zero", () => {
+		const result = bareExecResultToToolContent({
+			stdout: "",
+			stderr: "",
+			exitCode: 1,
+			signal: null,
+			durationMs: 1,
+		});
+		expect(result.text.length).toBeGreaterThan(0);
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("exit code 1");
+	});
+
+	it("describes the kill signal when the process was aborted (SIGKILL case)", () => {
+		const result = bareExecResultToToolContent({
+			stdout: "",
+			stderr: "",
+			exitCode: null,
+			signal: "SIGKILL",
+			durationMs: 1,
+		});
+		expect(result.text.length).toBeGreaterThan(0);
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("SIGKILL");
+	});
+
+	it("yields non-empty text even when exit code is 0 and both streams are empty", () => {
+		const result = bareExecResultToToolContent({
+			stdout: "",
+			stderr: "",
+			exitCode: 0,
+			signal: null,
+			durationMs: 1,
+		});
+		expect(result.text.length).toBeGreaterThan(0);
+		expect(result.isError).toBe(false);
 	});
 });
 

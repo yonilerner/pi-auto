@@ -753,6 +753,30 @@ export async function runBareCommand(
 }
 
 /**
+ * Map a BareExecResult to the text + isError pair for a tool-result block.
+ *
+ * Empty content must never be sent: Anthropic's API returns 400
+ * ("tool_result: content cannot be empty if is_error is true") and that
+ * error persists across every subsequent turn until the session JSONL is
+ * hand-edited. We substitute a placeholder whenever combined output is
+ * empty, regardless of exit code.
+ */
+export function bareExecResultToToolContent(result: BareExecResult): {
+	text: string;
+	isError: boolean;
+} {
+	const text = result.stdout + (result.stderr ? `\n[stderr]\n${result.stderr}` : "");
+	if (text !== "") {
+		return { text, isError: result.exitCode !== 0 };
+	}
+	const placeholder =
+		result.signal != null
+			? `(command produced no output; killed by signal ${result.signal})`
+			: `(command produced no output; exit code ${result.exitCode ?? "null"})`;
+	return { text: placeholder, isError: result.exitCode !== 0 };
+}
+
+/**
  * Pull the denied filesystem path out of an ASRT sandbox stderr.
  *
  * ASRT's macOS Seatbelt path produces stderr lines like:
