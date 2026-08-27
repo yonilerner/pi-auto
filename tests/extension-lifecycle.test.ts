@@ -9,6 +9,7 @@ const reviewAction = vi.hoisted(() => vi.fn());
 vi.mock("../extensions/reviewer.ts", () => ({ reviewAction }));
 
 import piAuto from "../extensions/pi-auto.ts";
+import runtimePiAuto from "../extensions/runtime/extension-runtime.ts";
 
 type EventHandler = (event: any, ctx: ExtensionContext) => Promise<unknown> | unknown;
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
@@ -89,6 +90,10 @@ function toolCall(id: string) {
 }
 
 describe("default pi-auto extension lifecycle", () => {
+	it("keeps the package entrypoint bound to the runtime implementation", () => {
+		expect(piAuto).toBe(runtimePiAuto);
+	});
+
 	let root: string | undefined;
 	let previousAgentDir: string | undefined;
 
