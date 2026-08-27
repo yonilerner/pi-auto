@@ -31,6 +31,7 @@ import {
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { DigestCoordinator } from "./runtime/digest-coordinator.ts";
+import { ReviewTurnController } from "./runtime/review-turn-controller.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
 import {
 	buildRetryReason,
@@ -217,6 +218,7 @@ export default function (pi: ExtensionAPI): void {
 	};
 	const breaker = new CircuitBreaker(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
 	const digestCoordinator = new DigestCoordinator();
+	const turnController = new ReviewTurnController(breaker);
 
 	// Runtime override: when true, ALL tool calls bypass pi-auto entirely
 	// (no scope check, no reviewer call, no circuit breaker). Set via
@@ -243,8 +245,6 @@ export default function (pi: ExtensionAPI): void {
 	const sandboxReviewLog: SandboxReviewLogEntry[] = [];
 	const SANDBOX_REVIEW_LOG_CAP = 50;
 
-	// Track the current turn so we can scope the circuit breaker per turn.
-	let currentTurnId = "boot";
 	// Validate sandbox at session start (hard-error policy from interview). We
 	// don't initialize the runtime here — that happens lazily on first bash
 	// call — but we do the availability + dependency check now so a misconfigured
@@ -373,11 +373,10 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	pi.on("turn_start", (event) => {
-		currentTurnId = `turn-${event.turnIndex}`;
-		breaker.clearTurn(currentTurnId);
+		turnController.start(event.turnIndex);
 	});
 	pi.on("turn_end", (_event, ctx) => {
-		breaker.clearTurn(currentTurnId);
+		turnController.end();
 		if (!settings.enableDigest) return;
 		// Fire-and-forget: update the rolling digest after the turn. We do NOT
 		// await this — a long summarizer call must not block the next user turn.
@@ -404,7 +403,7 @@ export default function (pi: ExtensionAPI): void {
 		const result = await reviewAction(scope.action, ctx, settings);
 		clearStatus(ctx);
 
-		return handleReviewResult(result, scope.action, ctx, breaker, settings, currentTurnId);
+		return handleReviewResult(result, scope.action, ctx, breaker, settings, turnController.turnId);
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
@@ -653,7 +652,7 @@ export default function (pi: ExtensionAPI): void {
 			setStatus(ctx, "reviewing review-only bash…");
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
-			return await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+			return await handleReviewResult(result, action, ctx, breaker, settings, turnController.turnId);
 		}
 		if (reviewOnlyDecision.kind === "mixed-sequence") {
 			const action = bashReviewAction(originalCommand, event.toolCallId, ctx.cwd);
@@ -661,7 +660,7 @@ export default function (pi: ExtensionAPI): void {
 			const result = await reviewAction(action, ctx, settings);
 			clearStatus(ctx);
 			if (result.kind === "assessed" && result.assessment.outcome === "allow") {
-				breaker.recordNonDenial(currentTurnId);
+				breaker.recordNonDenial(turnController.turnId);
 				if (ctx.hasUI && shouldNotify(settings.noticeLevel, "normal")) {
 					ctx.ui.notify(
 						[
@@ -672,7 +671,7 @@ export default function (pi: ExtensionAPI): void {
 					);
 				}
 			} else {
-				const gating = await handleReviewResult(result, action, ctx, breaker, settings, currentTurnId);
+				const gating = await handleReviewResult(result, action, ctx, breaker, settings, turnController.turnId);
 				if (gating && gating.block === true) return gating;
 			}
 
@@ -735,7 +734,7 @@ export default function (pi: ExtensionAPI): void {
 					ctx,
 					breaker,
 					settings,
-					currentTurnId,
+					turnController.turnId,
 				);
 				if (gating && gating.block === true) return gating;
 			}
