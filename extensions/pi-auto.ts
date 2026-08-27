@@ -22,29 +22,28 @@ import type {
 	ToolCallEventResult,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import {
-	parseLooseCommandArgvPrefixes,
-	parseShellLcPlainCommands,
-	parseTopLevelAndOrCommandSequence,
-	type AndOrCommandSegment,
-} from "./bash-parser.ts";
 import { CircuitBreaker } from "./circuit-breaker.ts";
+import {
+	buildMixedReviewOnlySequenceCommand,
+	cleanupAfterSandboxCommands,
+	decideSandboxReviewOnlyPrefix,
+	formatMixedReviewOnlyRoutingNotice,
+	type MixedReviewOnlySegment,
+} from "./sandbox-routing.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
 import { DigestCoordinator } from "./runtime/digest-coordinator.ts";
 import { ReviewTurnController } from "./runtime/review-turn-controller.ts";
+import { SandboxController } from "./runtime/sandbox-controller.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
 import {
 	buildRetryReason,
 	checkSandboxAvailability,
 	cleanupAfterSandboxCommand,
 	detectSandboxDenialForCommand,
-	ensureSandboxReady,
 	getNetworkAttemptsSince,
 	bareExecResultToToolContent,
 	runBareCommand,
-	shutdownSandbox,
 	wrapBashCommandForExecution,
-	type SandboxState,
 	type WrappedSandboxCommand,
 } from "./sandbox.ts";
 import { decideScope } from "./scope.ts";
@@ -230,7 +229,7 @@ export default function (pi: ExtensionAPI): void {
 	// Sandbox runtime state. Lazily initialized on first bash call when
 	// settings.sandbox.mode != "off" — but validated at session_start so we
 	// can hard-error early if the host doesn't support the sandbox.
-	const sandboxState: { current: SandboxState } = { current: { kind: "disabled" } };
+	const sandboxController = new SandboxController();
 	// Last sandbox mode for which we reconciled status indicator + warnings.
 	// Used in applySandboxMode() to decide whether a change actually happened
 	// (and whether to announce it).
@@ -269,7 +268,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", () => {
 		void digestCoordinator.drain();
-		void shutdownSandbox(sandboxState);
+		void sandboxController.reset();
 	});
 
 	/**
@@ -293,19 +292,17 @@ export default function (pi: ExtensionAPI): void {
 		if (desired === "off") {
 			// Tear down any existing runtime. shutdownSandbox is a no-op if not
 			// initialized.
-			await shutdownSandbox(sandboxState);
-			sandboxState.current = { kind: "disabled" };
+			await sandboxController.reset();
 		} else {
 			// If switching mode while a runtime exists, reset — ASRT's config is
 			// captured at initialize() time. ensureSandboxReady will re-init lazily
 			// on the next bash call.
-			if (sandboxState.current.kind === "ready" || sandboxState.current.kind === "initializing") {
-				await shutdownSandbox(sandboxState);
-				sandboxState.current = { kind: "disabled" };
-			} else if (sandboxState.current.kind === "broken") {
+			if (sandboxController.state.kind === "ready" || sandboxController.state.kind === "initializing") {
+				await sandboxController.reset();
+			} else if (sandboxController.state.kind === "broken") {
 				// Give it another shot — the user may have just fixed dependencies
 				// via the UI (e.g. flipping mode off then on after installing srt).
-				sandboxState.current = { kind: "disabled" };
+				await sandboxController.reset();
 			}
 
 			// Eager availability check so we surface dependency errors immediately
@@ -321,7 +318,7 @@ export default function (pi: ExtensionAPI): void {
 				].join("\n");
 				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 				else console.error(msg);
-				sandboxState.current = { kind: "broken", reason: avail.errors.join("; ") };
+				sandboxController.markBroken(avail.errors.join("; "));
 			} else if (
 				avail.warnings.length > 0 &&
 				ctx.hasUI &&
@@ -368,7 +365,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 		setSandboxStatus(ctx, {
 			mode: settings.sandbox.mode,
-			broken: sandboxState.current.kind === "broken",
+			broken: sandboxController.state.kind === "broken",
 		});
 	}
 
@@ -675,7 +672,7 @@ export default function (pi: ExtensionAPI): void {
 				if (gating && gating.block === true) return gating;
 			}
 
-			const ready = await ensureSandboxReady(settings, ctx.cwd, sandboxState);
+			const ready = await sandboxController.ensure(settings, ctx.cwd);
 			if (ready.kind !== "ready") {
 				if (ctx.hasUI) {
 					ctx.ui.notify(
@@ -742,7 +739,7 @@ export default function (pi: ExtensionAPI): void {
 
 		// Initialize the sandbox lazily on first wrap. We've already validated
 		// availability at session_start, so a failure here is exceptional.
-		const ready = await ensureSandboxReady(settings, ctx.cwd, sandboxState);
+		const ready = await sandboxController.ensure(settings, ctx.cwd);
 		if (ready.kind !== "ready") {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
@@ -878,12 +875,11 @@ export default function (pi: ExtensionAPI): void {
 				items.length ? items.join(", ") : empty;
 			const formatCommandPrefixes = (prefixes: readonly (readonly string[])[]) =>
 				prefixes.length ? prefixes.map((prefix) => prefix.join(" ")).join(", ") : "(none)";
+			const runtimeState = sandboxController.state;
 			const lines = [
 				`pi-auto sandbox: mode = ${s.mode}`,
 				``,
-				`runtime state: ${sandboxState.current.kind}${
-					sandboxState.current.kind === "broken" ? ` (${sandboxState.current.reason})` : ""
-				}`,
+				`runtime state: ${runtimeState.kind}${runtimeState.kind === "broken" ? ` (${runtimeState.reason})` : ""}`,
 				``,
 				`command routing:`,
 				`  extraSafeCommandPrefixes:              ${formatCommandPrefixes(settings.extraSafeCommandPrefixes)}`,
@@ -1196,191 +1192,6 @@ function bashReviewAction(command: string, toolCallId: string, cwd: string): Rev
 			reviewOnlyByPrefix: true,
 		},
 	};
-}
-
-export interface MixedReviewOnlySegment extends AndOrCommandSegment {
-	route: "review-only" | "sandbox";
-}
-
-export type SandboxReviewOnlyPrefixDecision =
-	| { kind: "match" }
-	| { kind: "mixed-sequence"; segments: MixedReviewOnlySegment[] }
-	| { kind: "unsupported"; reason: string }
-	| { kind: "no-match" };
-
-export function matchesSandboxReviewOnlyPrefix(
-	command: string,
-	prefixes: readonly (readonly string[])[],
-): boolean {
-	return decideSandboxReviewOnlyPrefix(command, prefixes).kind === "match";
-}
-
-export function decideSandboxReviewOnlyPrefix(
-	command: string,
-	prefixes: readonly (readonly string[])[],
-): SandboxReviewOnlyPrefixDecision {
-	if (prefixes.length === 0) return { kind: "no-match" };
-
-	const andOrSequence = parseTopLevelAndOrCommandSequence(command);
-	if (andOrSequence && andOrSequence.length > 1) {
-		const segments: MixedReviewOnlySegment[] = [];
-		let reviewOnlyCount = 0;
-		for (const segment of andOrSequence) {
-			if (segment.argv && matchesAnyCommandPrefix(segment.argv, prefixes)) {
-				segments.push({ ...segment, route: "review-only" });
-				reviewOnlyCount++;
-				continue;
-			}
-
-			const loosePrefixes = parseLooseCommandArgvPrefixes(segment.source);
-			if (loosePrefixes.some((argv) => couldMatchAnyCommandPrefix(argv, prefixes))) {
-				return {
-					kind: "unsupported",
-					reason: buildReviewOnlyUnsupportedReason(
-						prefixes,
-						command,
-						"a review-only command appears inside a segment whose shell syntax cannot be routed safely",
-					),
-				};
-			}
-
-			segments.push({ ...segment, route: "sandbox" });
-		}
-
-		if (reviewOnlyCount === segments.length) return { kind: "match" };
-		if (reviewOnlyCount > 0) return { kind: "mixed-sequence", segments };
-		return { kind: "no-match" };
-	}
-
-	const plainCommands = parseShellLcPlainCommands(["bash", "-lc", command]);
-	if (plainCommands && plainCommands.length > 0) {
-		const matched = plainCommands.filter((argv) => matchesAnyCommandPrefix(argv, prefixes));
-		if (matched.length === plainCommands.length) return { kind: "match" };
-		if (matched.length > 0) return { kind: "unsupported", reason: buildReviewOnlyUnsupportedReason(prefixes, command, "not every command in the script matches a review-only prefix") };
-		return { kind: "no-match" };
-	}
-
-	const loosePrefixes = parseLooseCommandArgvPrefixes(command);
-	if (loosePrefixes.some((argv) => couldMatchAnyCommandPrefix(argv, prefixes))) {
-		return { kind: "unsupported", reason: buildReviewOnlyUnsupportedReason(prefixes, command, "the command uses shell syntax that review-only routing does not support") };
-	}
-	return { kind: "no-match" };
-}
-
-export async function buildMixedReviewOnlySequenceCommand(
-	segments: readonly MixedReviewOnlySegment[],
-	cwd: string,
-	sandbox: SandboxSettings,
-	deps: {
-		wrapBashCommand?: (
-			command: string,
-			cwd?: string,
-			sandbox?: SandboxSettings,
-		) => Promise<string | WrappedSandboxCommand>;
-		cleanupAfterSandboxCommands?: (count: number) => void;
-	} = {},
-): Promise<{
-	command: string;
-	sandboxedCommands: string[];
-	sandboxAnnotationCommands: string[];
-	sandboxWrapCount: number;
-}> {
-	const wrap = deps.wrapBashCommand ?? wrapBashCommandForExecution;
-	const cleanup = deps.cleanupAfterSandboxCommands ?? cleanupAfterSandboxCommands;
-	const out: string[] = [];
-	const sandboxedCommands: string[] = [];
-	const sandboxAnnotationCommands: string[] = [];
-	let sandboxWrapCount = 0;
-	try {
-		for (const segment of segments) {
-			if (segment.operatorBefore) out.push(segment.operatorBefore);
-			if (segment.route === "review-only") {
-				out.push(segment.source);
-			} else {
-				sandboxedCommands.push(segment.source);
-				const wrapped = await wrap(segment.source, cwd, sandbox);
-				if (typeof wrapped === "string") {
-					out.push(wrapped);
-					sandboxAnnotationCommands.push(segment.source);
-				} else {
-					out.push(wrapped.wrappedCommand);
-					sandboxAnnotationCommands.push(wrapped.sandboxCommand);
-				}
-				sandboxWrapCount++;
-			}
-		}
-	} catch (err) {
-		cleanup(sandboxWrapCount);
-		throw err;
-	}
-	return { command: out.join(" "), sandboxedCommands, sandboxAnnotationCommands, sandboxWrapCount };
-}
-
-export function cleanupAfterSandboxCommands(
-	count: number,
-	cleanup: () => void = cleanupAfterSandboxCommand,
-): void {
-	for (let i = 0; i < count; i++) {
-		cleanup();
-	}
-}
-
-export function formatMixedReviewOnlyRoutingNotice(segments: readonly MixedReviewOnlySegment[]): string {
-	const lines = ["pi-auto routed mixed bash:"];
-	for (const segment of segments) {
-		const operator = segment.operatorBefore ?? "";
-		const route = segment.route === "review-only" ? "review-only" : "sandboxed";
-		lines.push(`   ${operator.padStart(2)} ${route.padEnd(11)} : ${truncate(segment.source, 160)}`);
-	}
-	return lines.join("\n");
-}
-
-function buildReviewOnlyUnsupportedReason(
-	prefixes: readonly (readonly string[])[],
-	command: string,
-	detail: string,
-): string {
-	return [
-		"pi-auto blocked this bash command before sandboxing because it appears to use a configured sandbox.reviewOnlyCommandPrefixes entry, but cannot be routed safely.",
-		`Reason: ${detail}.`,
-		`Configured prefixes: ${prefixes.map((p) => p.join(" ")).join(", ")}.`,
-		`Command: ${truncate(command, 500)}`,
-		"Rewrite it as plain argv-only command(s) where every command starts with a review-only prefix. For multiline text, prefer a temporary file plus --body-file over shell quoting, substitution, or redirection.",
-	].join("\n");
-}
-
-function matchesAnyCommandPrefix(
-	argv: readonly string[],
-	prefixes: readonly (readonly string[])[],
-): boolean {
-	return prefixes.some((prefix) => matchesCommandPrefix(argv, prefix));
-}
-
-function matchesCommandPrefix(argv: readonly string[], prefix: readonly string[]): boolean {
-	// Do not basename argv[0]: [["gh"]] must not match ./gh or /tmp/gh.
-	// Pathful commands must be configured and matched exactly.
-	if (prefix.length === 0 || argv.length < prefix.length) return false;
-	for (let i = 0; i < prefix.length; i++) {
-		if ((argv[i] ?? "") !== prefix[i]) return false;
-	}
-	return true;
-}
-
-function couldMatchAnyCommandPrefix(
-	argvPrefix: readonly string[],
-	prefixes: readonly (readonly string[])[],
-): boolean {
-	return prefixes.some((prefix) => couldMatchCommandPrefix(argvPrefix, prefix));
-}
-
-function couldMatchCommandPrefix(argvPrefix: readonly string[], prefix: readonly string[]): boolean {
-	// Keep unsupported-syntax detection aligned with exact command matching.
-	if (prefix.length === 0 || argvPrefix.length === 0) return false;
-	const n = Math.min(argvPrefix.length, prefix.length);
-	for (let i = 0; i < n; i++) {
-		if ((argvPrefix[i] ?? "") !== prefix[i]) return false;
-	}
-	return true;
 }
 
 export function parseSandboxLogCount(args: string, fallback = 10): number {

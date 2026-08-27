@@ -2,17 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
 import {
-	buildMixedReviewOnlySequenceCommand,
-	cleanupAfterSandboxCommands,
-	decideSandboxReviewOnlyPrefix,
 	fallbackToUser,
-	formatMixedReviewOnlyRoutingNotice,
 	formatSandboxReviewLog,
 	handleCircuitBreaker,
 	handleReviewResult,
-	matchesSandboxReviewOnlyPrefix,
 	parseSandboxLogCount,
 } from "../extensions/pi-auto.ts";
+import {
+	buildMixedReviewOnlySequenceCommand,
+	cleanupAfterSandboxCommands,
+	decideSandboxReviewOnlyPrefix,
+	formatMixedReviewOnlyRoutingNotice,
+	matchesSandboxReviewOnlyPrefix,
+} from "../extensions/sandbox-routing.ts";
 import type { ReviewResult, ReviewResultDiagnostics } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
