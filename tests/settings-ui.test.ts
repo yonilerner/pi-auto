@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-	formatCommandPrefix,
 	formatLayerAttribution,
 	formatSavedSettingNotification,
 	formatSavedSettingValue,
-	parseCommandPrefixInput,
 } from "../extensions/settings-ui.ts";
+import {
+	formatCommandPrefix,
+	parseCommandPrefixInput,
+} from "../extensions/settings-field-codecs.ts";
 
 describe("formatLayerAttribution", () => {
 	it("marks user-global values that match the default", () => {
