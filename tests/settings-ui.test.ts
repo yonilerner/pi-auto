@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
 	formatLayerAttribution,
 	formatSavedSettingNotification,
 	formatSavedSettingValue,
+	registerSettingsCommand,
+	type SettingsUIDeps,
 } from "../extensions/settings-ui.ts";
+import type { PiAutoSettings, SettingsLayerMap } from "../extensions/types.ts";
 import {
 	formatCommandPrefix,
 	parseCommandPrefixInput,
@@ -53,6 +57,42 @@ describe("formatSavedSettingValue", () => {
 		expect(formatSavedSettingValue("")).toBe('""');
 		expect(formatSavedSettingValue("  model")).toBe('"  model"');
 		expect(formatSavedSettingValue("model\nnext")).toBe('"model\\nnext"');
+	});
+});
+
+describe("settings command registration", () => {
+	it("registers both commands and obtains the no-UI path from injected dependencies", async () => {
+		const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+		const pi = {
+			registerCommand: vi.fn((name: string, command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
+				commands.set(name, command);
+			}),
+		} as unknown as ExtensionAPI;
+		const getPaths = vi.fn(() => ({ userGlobal: "/tmp/injected-pi-auto.json", perProject: null }));
+		const deps: SettingsUIDeps = {
+			getSettings: vi.fn(() => ({} as PiAutoSettings)),
+			applySettings: vi.fn(),
+			getLayers: vi.fn(() => ({} as SettingsLayerMap)),
+			setLayers: vi.fn(),
+			getPaths,
+			setPaths: vi.fn(),
+			defaults: {} as PiAutoSettings,
+		};
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+		try {
+			registerSettingsCommand(pi, deps);
+			expect([...commands.keys()].sort()).toEqual(["pi-auto-reload-settings", "pi-auto-settings"]);
+
+			await commands.get("pi-auto-settings")?.handler("", {
+				hasUI: false,
+			} as ExtensionContext);
+			expect(getPaths).toHaveBeenCalledOnce();
+			expect(log).toHaveBeenCalledWith(
+				"pi-auto-settings: no UI available. Edit the JSON file at /tmp/injected-pi-auto.json directly.",
+			);
+		} finally {
+			log.mockRestore();
+		}
 	});
 });
 
