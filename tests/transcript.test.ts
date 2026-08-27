@@ -26,6 +26,7 @@ function fakeSessionManager(entries: FakeEntry[]): ReadonlySessionManager {
 const BASE_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
@@ -41,8 +42,16 @@ const BASE_SETTINGS: PiAutoSettings = {
 	sensitivePathPatterns: [],
 	noticeLevel: "normal",
 	customPolicy: "",
+	reviewerPolicySource: "default",
 	stripAssistantText: false,
 	stripToolResults: false,
+	sandbox: {
+		mode: "off",
+		allowedDomains: [], deniedDomains: [], disableDefaultNoProxy: false,
+		allowRead: [], denyRead: [], allowWrite: ["."], denyWrite: [],
+		reviewOnlyCommandPrefixes: [], allowedDangerousFiles: [],
+		showStatusIndicator: true, annotateBashDisplay: true,
+	},
 };
 
 const NOOP_ACTION: ReviewableAction = {

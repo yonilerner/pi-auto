@@ -13,12 +13,13 @@ import {
 	matchesSandboxReviewOnlyPrefix,
 	parseSandboxLogCount,
 } from "../extensions/pi-auto.ts";
-import type { ReviewResult } from "../extensions/reviewer.ts";
+import type { ReviewResult, ReviewResultDiagnostics } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
 const SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
@@ -51,6 +52,14 @@ const SETTINGS: PiAutoSettings = {
 		showStatusIndicator: true,
 		annotateBashDisplay: true,
 	},
+};
+
+const REVIEW_DIAGNOSTICS: ReviewResultDiagnostics = {
+	modelSource: "configured",
+	promptFormat: "pi-auto",
+	latencyMs: 0,
+	usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	rawText: "",
 };
 
 const ACTION: ReviewableAction = {
@@ -309,7 +318,7 @@ describe("handleReviewResult: allow", () => {
 
 	it("returns undefined (does not block)", async () => {
 		const { ctx } = makeCtx();
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "allow" }) };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "allow" }) };
 		const out = await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		expect(out).toBeUndefined();
 	});
@@ -318,6 +327,7 @@ describe("handleReviewResult: allow", () => {
 		const { ctx, notify } = makeCtx();
 		const result: ReviewResult = {
 			kind: "assessed",
+			diagnostics: REVIEW_DIAGNOSTICS,
 			assessment: assessment({ outcome: "allow", risk_level: "medium", rationale: "OK by user" }),
 		};
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
@@ -329,8 +339,8 @@ describe("handleReviewResult: allow", () => {
 
 	it("does NOT notify when noticeLevel = silent", async () => {
 		const { ctx, notify } = makeCtx();
-		const settings = { ...SETTINGS, noticeLevel: "silent" };
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "allow" }) };
+		const settings: PiAutoSettings = { ...SETTINGS, noticeLevel: "silent" };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "allow" }) };
 		await handleReviewResult(result, ACTION, ctx, breaker, settings, "t1");
 		expect(notify).not.toHaveBeenCalled();
 	});
@@ -339,7 +349,7 @@ describe("handleReviewResult: allow", () => {
 		const { ctx } = makeCtx();
 		breaker.recordDenial("t1");
 		breaker.recordDenial("t1");
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "allow" }) };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "allow" }) };
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		// Two more denials should NOT trip the breaker (counter was reset).
 		expect(breaker.recordDenial("t1").kind).toBe("continue");
@@ -357,6 +367,7 @@ describe("handleReviewResult: deny", () => {
 		const { ctx } = makeCtx();
 		const result: ReviewResult = {
 			kind: "assessed",
+			diagnostics: REVIEW_DIAGNOSTICS,
 			assessment: assessment({ outcome: "deny", risk_level: "critical", rationale: "boom" }),
 		};
 		const out = await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
@@ -370,6 +381,7 @@ describe("handleReviewResult: deny", () => {
 		const { ctx, notify } = makeCtx();
 		const result: ReviewResult = {
 			kind: "assessed",
+			diagnostics: REVIEW_DIAGNOSTICS,
 			assessment: assessment({ outcome: "deny", risk_level: "high" }),
 		};
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
@@ -379,7 +391,7 @@ describe("handleReviewResult: deny", () => {
 
 	it("counts the denial in the circuit breaker", async () => {
 		const { ctx } = makeCtx();
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "deny" }) };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "deny" }) };
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		// Now any further denials in this turn should trip the breaker via the public counter.
@@ -388,7 +400,7 @@ describe("handleReviewResult: deny", () => {
 
 	it("trips the circuit breaker after enough denials and prompts the user", async () => {
 		const { ctx, select } = makeCtx({ selectAnswer: "Stop this turn" });
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "deny" }) };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "deny" }) };
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		// Third denial in a row trips the breaker.
@@ -400,7 +412,7 @@ describe("handleReviewResult: deny", () => {
 
 	it("non-interactive mode hard-blocks on deny without prompting", async () => {
 		const { ctx, select } = makeCtx({ hasUI: false });
-		const result: ReviewResult = { kind: "assessed", assessment: assessment({ outcome: "deny" }) };
+		const result: ReviewResult = { kind: "assessed", diagnostics: REVIEW_DIAGNOSTICS, assessment: assessment({ outcome: "deny" }) };
 		const out = await handleReviewResult(result, ACTION, ctx, breaker, SETTINGS, "t1");
 		expect(out?.block).toBe(true);
 		expect(select).not.toHaveBeenCalled();

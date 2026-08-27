@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 const DEFAULTS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,

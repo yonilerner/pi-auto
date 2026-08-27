@@ -5,6 +5,7 @@ import type { PiAutoSettings } from "../extensions/types.ts";
 const SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
@@ -20,8 +21,16 @@ const SETTINGS: PiAutoSettings = {
 	sensitivePathPatterns: ["~/.ssh", "~/.aws", "/etc/shadow", "credentials", ".env"],
 	noticeLevel: "normal",
 	customPolicy: "",
+	reviewerPolicySource: "default",
 	stripAssistantText: false,
 	stripToolResults: false,
+	sandbox: {
+		mode: "off",
+		allowedDomains: [], deniedDomains: [], disableDefaultNoProxy: false,
+		allowRead: [], denyRead: [], allowWrite: ["."], denyWrite: [],
+		reviewOnlyCommandPrefixes: [], allowedDangerousFiles: [],
+		showStatusIndicator: true, annotateBashDisplay: true,
+	},
 };
 
 const CWD = "/home/me/project";
