@@ -6,7 +6,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { parseShellLcPlainCommands, tryParseShell, tryParseWordOnlyCommandsSequence } from "../extensions/bash-parser.ts";
+import {
+	parseShellLcPlainCommands,
+	parseTopLevelAndOrCommandSequence,
+	tryParseShell,
+	tryParseWordOnlyCommandsSequence,
+} from "../extensions/bash-parser.ts";
 
 function parseSeq(src: string): string[][] | null {
 	const tree = tryParseShell(src);
@@ -101,6 +106,28 @@ describe("tryParseWordOnlyCommandsSequence: rejected forms", () => {
 	it("rejects concatenation with command substitution", () => {
 		expect(parseSeq('rg -g"$(pwd)" pattern')).toBeNull();
 		expect(parseSeq(`rg -g"$(echo '*.py')" pattern`)).toBeNull();
+	});
+});
+
+describe("parseTopLevelAndOrCommandSequence", () => {
+	it("splits top-level AND/OR segments and preserves operators/source", () => {
+		expect(parseTopLevelAndOrCommandSequence("gh auth status && ./script.sh || echo fallback")).toEqual([
+			{ source: "gh auth status", operatorBefore: undefined, argv: ["gh", "auth", "status"] },
+			{ source: "./script.sh", operatorBefore: "&&", argv: ["./script.sh"] },
+			{ source: "echo fallback", operatorBefore: "||", argv: ["echo", "fallback"] },
+		]);
+	});
+
+	it("keeps nested control flow inside a segment", () => {
+		expect(parseTopLevelAndOrCommandSequence("if true; then echo hi; fi && gh auth status")).toEqual([
+			{ source: "if true; then echo hi; fi", operatorBefore: undefined, argv: null },
+			{ source: "gh auth status", operatorBefore: "&&", argv: ["gh", "auth", "status"] },
+		]);
+	});
+
+	it("does not split semicolon or pipeline lists", () => {
+		expect(parseTopLevelAndOrCommandSequence("gh auth status; echo hi")).toBeNull();
+		expect(parseTopLevelAndOrCommandSequence("gh auth status | cat")).toBeNull();
 	});
 });
 

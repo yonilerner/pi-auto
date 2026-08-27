@@ -30,6 +30,15 @@ const Bash = BashLanguage as unknown as Parser.Language;
 type Node = Parser.SyntaxNode;
 type Tree = Parser.Tree;
 
+export interface AndOrCommandSegment {
+	/** Source text for this top-level AND/OR segment. */
+	source: string;
+	/** Operator that connects the previous segment to this one. Undefined for the first segment. */
+	operatorBefore?: "&&" | "||";
+	/** Plain argv for simple word-only command segments; null for compound/unsupported segment syntax. */
+	argv: string[] | null;
+}
+
 // Tree-sitter parsers are expensive to construct — share one per process.
 let cachedParser: Parser | undefined;
 function getParser(): Parser {
@@ -135,6 +144,82 @@ export function parseShellLcPlainCommands(command: readonly string[]): string[][
 	const tree = tryParseShell(extracted.script);
 	if (!tree) return null;
 	return tryParseWordOnlyCommandsSequence(tree, extracted.script);
+}
+
+/**
+ * Split a shell script on top-level `&&` / `||` operators only.
+ *
+ * This is deliberately narrower than `tryParseWordOnlyCommandsSequence`: it
+ * preserves each segment's source text so callers can execute segments through
+ * different routes, while refusing semicolons/pipelines/backgrounding at this
+ * routing layer. Nested shell syntax is kept inside a segment; callers decide
+ * whether that segment is acceptable for their route.
+ */
+export function parseTopLevelAndOrCommandSequence(script: string): AndOrCommandSegment[] | null {
+	const tree = tryParseShell(script);
+	if (!tree || tree.rootNode.hasError) return null;
+
+	const root = tree.rootNode;
+	const container =
+		root.namedChildren.length === 1 && root.namedChildren[0]?.type === "list"
+			? root.namedChildren[0]
+			: root;
+	const parsed = parseAndOrContainer(container, script);
+	if (!parsed || parsed.segments.length === 0) return null;
+	return parsed.sawAndOr ? parsed.segments : null;
+}
+
+function parseAndOrContainer(
+	container: Node,
+	script: string,
+): { segments: AndOrCommandSegment[]; sawAndOr: boolean } | null {
+	const segments: AndOrCommandSegment[] = [];
+	let pendingOperator: "&&" | "||" | undefined;
+	let expectSegment = true;
+	let sawAndOr = false;
+
+	for (const child of container.children) {
+		if (child.isNamed) {
+			if (!expectSegment) return null;
+			let childSegments: AndOrCommandSegment[];
+			if (child.type === "list") {
+				const nested = parseAndOrContainer(child, script);
+				if (!nested) return null;
+				childSegments = nested.segments;
+				sawAndOr = sawAndOr || nested.sawAndOr;
+			} else {
+				childSegments = [
+					{
+						source: script.slice(child.startIndex, child.endIndex),
+						argv: child.type === "command" ? parsePlainCommandFromNode(child, script) : null,
+					},
+				];
+			}
+			if (childSegments.length === 0) return null;
+			segments.push({ ...childSegments[0], operatorBefore: pendingOperator }, ...childSegments.slice(1));
+			pendingOperator = undefined;
+			expectSegment = false;
+			continue;
+		}
+
+		const token = child.type.trim();
+		if (token.length === 0) continue;
+		if (token === "&&" || token === "||") {
+			if (expectSegment) return null;
+			pendingOperator = token;
+			expectSegment = true;
+			sawAndOr = true;
+			continue;
+		}
+
+		// Semicolons, pipes, backgrounding, redirects at this level are not part
+		// of the prototype route. They continue through the older all-or-nothing
+		// review-only matcher.
+		return null;
+	}
+
+	if (pendingOperator || expectSegment || segments.length === 0) return null;
+	return { segments, sawAndOr };
 }
 
 /**

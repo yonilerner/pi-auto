@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CircuitBreaker } from "../extensions/circuit-breaker.ts";
-import { decideSandboxReviewOnlyPrefix, fallbackToUser, handleCircuitBreaker, handleReviewResult, matchesSandboxReviewOnlyPrefix } from "../extensions/pi-auto.ts";
+import {
+	buildMixedReviewOnlySequenceCommand,
+	cleanupAfterSandboxCommands,
+	decideSandboxReviewOnlyPrefix,
+	fallbackToUser,
+	formatMixedReviewOnlyRoutingNotice,
+	handleCircuitBreaker,
+	handleReviewResult,
+	matchesSandboxReviewOnlyPrefix,
+} from "../extensions/pi-auto.ts";
 import type { ReviewResult } from "../extensions/reviewer.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "../extensions/types.ts";
 
@@ -111,8 +120,33 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 		expect(decideSandboxReviewOnlyPrefix("gh auth status; /usr/bin/gh pr list", [["gh"]]).kind).toBe("unsupported");
 	});
 
-	it("blocks with a targeted unsupported result when only some plain commands match", () => {
-		const decision = decideSandboxReviewOnlyPrefix("gh auth status && rm -rf /tmp/x", [["gh"]]);
+	it("routes top-level AND/OR sequences with both review-only and sandboxed segments", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status && ./safe-looking-script.sh || gh pr list", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(decision.segments.map((s) => ({ source: s.source, op: s.operatorBefore, route: s.route }))).toEqual([
+				{ source: "gh auth status", op: undefined, route: "review-only" },
+				{ source: "./safe-looking-script.sh", op: "&&", route: "sandbox" },
+				{ source: "gh pr list", op: "||", route: "review-only" },
+			]);
+		}
+	});
+
+	it("formats a routing notice for mixed review-only sequences", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh repo view --json url && ./test.sh || gh repo view --json name", [["gh"]]);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind === "mixed-sequence") {
+			expect(formatMixedReviewOnlyRoutingNotice(decision.segments)).toBe([
+				"pi-auto routed mixed bash:",
+				"      review-only : gh repo view --json url",
+				"   && sandboxed   : ./test.sh",
+				"   || review-only : gh repo view --json name",
+			].join("\n"));
+		}
+	});
+
+	it("still blocks mixed review-only commands behind unsupported separators", () => {
+		const decision = decideSandboxReviewOnlyPrefix("gh auth status; rm -rf /tmp/x", [["gh"]]);
 		expect(decision.kind).toBe("unsupported");
 		if (decision.kind === "unsupported") {
 			expect(decision.reason).toContain("not every command");
@@ -141,6 +175,59 @@ describe("decideSandboxReviewOnlyPrefix", () => {
 	it("does not block unrelated commands that mention the review-only command as an argument", () => {
 		expect(decideSandboxReviewOnlyPrefix("echo gh", [["gh"]]).kind).toBe("no-match");
 		expect(decideSandboxReviewOnlyPrefix("printf gh", [["gh"]]).kind).toBe("no-match");
+	});
+
+	it("records one sandbox cleanup per wrapped mixed-sequence segment", async () => {
+		const decision = decideSandboxReviewOnlyPrefix(
+			"gh auth status && ./test.sh || npm test && gh pr list",
+			[["gh"]],
+		);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind !== "mixed-sequence") return;
+
+		const wrap = vi.fn(async (command: string) => `sandbox(${command})`);
+		const rewritten = await buildMixedReviewOnlySequenceCommand(
+			decision.segments,
+			"/repo",
+			SETTINGS.sandbox,
+			{ wrapBashCommand: wrap },
+		);
+
+		expect(wrap).toHaveBeenCalledTimes(2);
+		expect(wrap.mock.calls.map((call) => call[0])).toEqual(["./test.sh", "npm test"]);
+		expect(rewritten.sandboxedCommands).toEqual(["./test.sh", "npm test"]);
+		expect(rewritten.sandboxWrapCount).toBe(2);
+		expect(rewritten.command).toBe("gh auth status && sandbox(./test.sh) || sandbox(npm test) && gh pr list");
+
+		const cleanup = vi.fn();
+		cleanupAfterSandboxCommands(rewritten.sandboxWrapCount, cleanup);
+		expect(cleanup).toHaveBeenCalledTimes(2);
+	});
+
+	it("cleans up already wrapped mixed-sequence segments if a later wrap fails", async () => {
+		const decision = decideSandboxReviewOnlyPrefix(
+			"gh auth status && ./first.sh || ./second.sh",
+			[["gh"]],
+		);
+		expect(decision.kind).toBe("mixed-sequence");
+		if (decision.kind !== "mixed-sequence") return;
+
+		const wrap = vi.fn(async (command: string) => {
+			if (command === "./second.sh") throw new Error("boom");
+			return `sandbox(${command})`;
+		});
+		const cleanup = vi.fn();
+
+		await expect(buildMixedReviewOnlySequenceCommand(
+			decision.segments,
+			"/repo",
+			SETTINGS.sandbox,
+			{ wrapBashCommand: wrap, cleanupAfterSandboxCommands: cleanup },
+		)).rejects.toThrow("boom");
+
+		expect(wrap).toHaveBeenCalledTimes(2);
+		expect(cleanup).toHaveBeenCalledOnce();
+		expect(cleanup).toHaveBeenCalledWith(1);
 	});
 
 	it("uses longer configured prefixes when enough static argv is visible", () => {
