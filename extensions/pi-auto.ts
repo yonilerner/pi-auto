@@ -30,6 +30,7 @@ import {
 } from "./bash-parser.ts";
 import { CircuitBreaker } from "./circuit-breaker.ts";
 import { getLatestDigest, updateDigestForTurn } from "./digest.ts";
+import { DigestCoordinator } from "./runtime/digest-coordinator.ts";
 import { reviewAction, type ReviewResult } from "./reviewer.ts";
 import {
 	buildRetryReason,
@@ -215,6 +216,7 @@ export default function (pi: ExtensionAPI): void {
 		perProject: null,
 	};
 	const breaker = new CircuitBreaker(settings.maxConsecutiveDenialsPerTurn, settings.maxTotalDenialsPerTurn);
+	const digestCoordinator = new DigestCoordinator();
 
 	// Runtime override: when true, ALL tool calls bypass pi-auto entirely
 	// (no scope check, no reviewer call, no circuit breaker). Set via
@@ -266,6 +268,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
+		void digestCoordinator.drain();
 		void shutdownSandbox(sandboxState);
 	});
 
@@ -380,9 +383,7 @@ export default function (pi: ExtensionAPI): void {
 		// await this — a long summarizer call must not block the next user turn.
 		// If the user kicks off a new turn before this finishes, the next
 		// reviewer call sees the stale digest, which is fine.
-		void updateDigestForTurn(ctx, settings, pi).catch(() => {
-			/* swallow — best effort */
-		});
+		digestCoordinator.schedule(() => updateDigestForTurn(ctx, settings, pi));
 	});
 
 	pi.on("tool_call", async (event, ctx): Promise<ToolCallEventResult | undefined> => {
