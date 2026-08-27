@@ -172,6 +172,31 @@ describe("default pi-auto extension lifecycle", () => {
 		expect(controller.reset).toHaveBeenCalledTimes(1);
 	});
 
+	it("routes disable and enable commands through the same live review gate", async () => {
+		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
+		mkdirSync(path.join(root, ".agents"), { recursive: true });
+		writeFileSync(
+			path.join(root, ".agents", "pi-auto.json"),
+			JSON.stringify({ reviewerModel: "integration-reviewer", enableDigest: false, sandbox: { mode: "off" } }),
+		);
+		const api = new FakeExtensionAPI();
+		piAuto(api.asExtensionAPI());
+		const ctx = makeContext(root, true);
+		await api.events.get("session_start")?.({}, ctx);
+		reviewAction.mockResolvedValue(deniedReview());
+		const toolHandler = api.events.get("tool_call");
+		if (!toolHandler) throw new Error("missing tool handler");
+
+		expect(await toolHandler(toolCall("reviewed"), ctx)).toMatchObject({ block: true });
+		expect(reviewAction).toHaveBeenCalledTimes(1);
+		await api.commands.get("pi-auto-disable")?.handler("", ctx);
+		expect(await toolHandler(toolCall("bypassed"), ctx)).toBeUndefined();
+		expect(reviewAction).toHaveBeenCalledTimes(1);
+		await api.commands.get("pi-auto-enable")?.handler("", ctx);
+		expect(await toolHandler(toolCall("reviewed-again"), ctx)).toMatchObject({ block: true });
+		expect(reviewAction).toHaveBeenCalledTimes(2);
+	});
+
 	it("registers its default surface, loads session settings, and scopes denials to turns", async () => {
 		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
 		const agentDir = path.join(root, "agent");
