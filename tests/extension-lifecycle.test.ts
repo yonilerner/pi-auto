@@ -4,9 +4,39 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+interface TestSandboxController {
+	state: { kind: string; reason?: string; cwd?: string; settings?: unknown };
+	reset: ReturnType<typeof vi.fn>;
+}
+
 const reviewAction = vi.hoisted(() => vi.fn());
+const sandboxControllers = vi.hoisted(() => [] as TestSandboxController[]);
 
 vi.mock("../extensions/reviewer.ts", () => ({ reviewAction }));
+vi.mock("../extensions/sandbox.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../extensions/sandbox.ts")>();
+	return {
+		...actual,
+		checkSandboxAvailability: vi.fn(() => ({ supportedPlatform: true, errors: [], warnings: [] })),
+	};
+});
+vi.mock("../extensions/runtime/sandbox-controller.ts", () => {
+	class SandboxController {
+		state: TestSandboxController["state"] = { kind: "disabled" };
+		readonly reset = vi.fn(async () => {
+			this.state = { kind: "disabled" };
+		});
+		readonly ensure = vi.fn(async () => this.state);
+		readonly markBroken = vi.fn((reason: string) => {
+			this.state = { kind: "broken", reason };
+		});
+
+		constructor() {
+			sandboxControllers.push(this);
+		}
+	}
+	return { SandboxController };
+});
 
 import piAuto from "../extensions/pi-auto.ts";
 import runtimePiAuto from "../extensions/runtime/extension-runtime.ts";
@@ -99,11 +129,47 @@ describe("default pi-auto extension lifecycle", () => {
 
 	afterEach(() => {
 		reviewAction.mockReset();
+		sandboxControllers.length = 0;
 		if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
 		else process.env.PI_AGENT_DIR = previousAgentDir;
 		if (root) rmSync(root, { recursive: true, force: true });
 		root = undefined;
 		previousAgentDir = undefined;
+	});
+
+	it("keeps a ready sandbox across unrelated settings reloads", async () => {
+		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
+		mkdirSync(path.join(root, ".agents"), { recursive: true });
+		writeFileSync(
+			path.join(root, ".agents", "pi-auto.json"),
+			JSON.stringify({ enableDigest: false, reviewerModel: "first", sandbox: { mode: "escape-only" } }),
+		);
+
+		const api = new FakeExtensionAPI();
+		piAuto(api.asExtensionAPI());
+		const ctx = makeContext(root);
+		await api.events.get("session_start")?.({}, ctx);
+		const controller = sandboxControllers.at(-1);
+		if (!controller) throw new Error("missing sandbox controller");
+		controller.state = { kind: "ready", cwd: root, settings: {} };
+
+		writeFileSync(
+			path.join(root, ".agents", "pi-auto.json"),
+			JSON.stringify({ enableDigest: false, reviewerModel: "second", sandbox: { mode: "escape-only" } }),
+		);
+		await api.commands.get("pi-auto-reload-settings")?.handler("", ctx);
+		expect(controller.reset).not.toHaveBeenCalled();
+
+		writeFileSync(
+			path.join(root, ".agents", "pi-auto.json"),
+			JSON.stringify({
+				enableDigest: false,
+				reviewerModel: "second",
+				sandbox: { mode: "escape-only", allowedDomains: ["example.com"] },
+			}),
+		);
+		await api.commands.get("pi-auto-reload-settings")?.handler("", ctx);
+		expect(controller.reset).toHaveBeenCalledTimes(1);
 	});
 
 	it("registers its default surface, loads session settings, and scopes denials to turns", async () => {

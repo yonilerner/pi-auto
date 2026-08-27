@@ -234,6 +234,7 @@ export default function (pi: ExtensionAPI): void {
 	// Used in applySandboxMode() to decide whether a change actually happened
 	// (and whether to announce it).
 	let appliedSandboxMode: SandboxMode = "off";
+	let appliedSandboxSettings: SandboxSettings | undefined;
 	const wrappedBashByToolCallId = new Map<string, WrappedBashState>();
 	// Most-recent sandbox-denial info, surfaced by /pi-auto-sandbox.
 	const recentDenials: Array<{ command: string; reason: string; escapedAllow: boolean; at: number }> = [];
@@ -288,23 +289,23 @@ export default function (pi: ExtensionAPI): void {
 	): Promise<void> {
 		const desired = settings.sandbox.mode;
 		const previous = appliedSandboxMode;
+		const sandboxSettingsChanged = !sameSandboxSettings(appliedSandboxSettings, settings.sandbox);
+		const runtimeState = sandboxController.state;
+		const mustReset =
+			(desired === "off" && runtimeState.kind !== "disabled") ||
+			(desired !== "off" &&
+				(sandboxSettingsChanged || runtimeState.kind === "broken") &&
+				(runtimeState.kind === "ready" ||
+					runtimeState.kind === "initializing" ||
+					runtimeState.kind === "broken"));
 
-		if (desired === "off") {
-			// Tear down any existing runtime. shutdownSandbox is a no-op if not
-			// initialized.
-			await sandboxController.reset();
-		} else {
-			// If switching mode while a runtime exists, reset — ASRT's config is
-			// captured at initialize() time. ensureSandboxReady will re-init lazily
-			// on the next bash call.
-			if (sandboxController.state.kind === "ready" || sandboxController.state.kind === "initializing") {
-				await sandboxController.reset();
-			} else if (sandboxController.state.kind === "broken") {
-				// Give it another shot — the user may have just fixed dependencies
-				// via the UI (e.g. flipping mode off then on after installing srt).
-				await sandboxController.reset();
-			}
+		// ASRT captures its policy at initialize() time. Reconfigure it only when
+		// that policy changed; an unrelated settings save must not tear down a
+		// ready sandbox. Broken states still reset so a save can retry after the
+		// host dependency was fixed.
+		if (mustReset) await sandboxController.reset();
 
+		if (desired !== "off") {
 			// Eager availability check so we surface dependency errors immediately
 			// rather than on the first bash call (matches the original design).
 			const avail = checkSandboxAvailability(settings.sandbox);
@@ -351,6 +352,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		appliedSandboxMode = desired;
+		appliedSandboxSettings = structuredClone(settings.sandbox);
 	}
 
 	/**
@@ -1321,6 +1323,13 @@ export function shouldNotify(
 	const tierIndex = NOTICE_LEVEL_ORDER.indexOf(tier);
 	const configuredIndex = NOTICE_LEVEL_ORDER.indexOf(noticeLevel);
 	return configuredIndex >= tierIndex;
+}
+
+function sameSandboxSettings(
+	left: SandboxSettings | undefined,
+	right: SandboxSettings,
+): boolean {
+	return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
 }
 
 function assignSettings(target: PiAutoSettings, source: PiAutoSettings): void {
