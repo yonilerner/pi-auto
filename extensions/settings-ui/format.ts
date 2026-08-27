@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SettingsLayer } from "./types.ts";
-import type { EditableLayer } from "./settings-ui-fields.ts";
+import type { SettingsLayer } from "../types.ts";
+import type { EditableLayer } from "./fields.ts";
 
 export function formatSavedSettingValue(value: string): string {
 	let rendered = value;

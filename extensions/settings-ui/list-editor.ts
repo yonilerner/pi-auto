@@ -1,16 +1,16 @@
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Input, type SelectItem, SelectList, type SelectListTheme, Text } from "@earendil-works/pi-tui";
-import { loadSettings, modifySettingArrayField } from "./settings-store.ts";
-import type { LoadedSettings } from "./settings-store.ts";
-import type { SettingsUIDeps } from "./settings-ui-contract.ts";
+import { loadSettings, modifySettingArrayField } from "../settings-store.ts";
+import type { LoadedSettings } from "../settings-store.ts";
+import type { SettingsUIDeps } from "./contract.ts";
 import {
 	type ArrayFieldDescriptor,
 	type EditableLayer,
 	renderListSummary,
 	type StringListFieldDescriptor,
-} from "./settings-ui-fields.ts";
-import { formatSavedSettingNotification } from "./settings-ui-format.ts";
+} from "./fields.ts";
+import { formatSavedSettingNotification } from "./format.ts";
 
 export interface SettingsUIListEditorHelpers {
 	resolveLayerWritePath: (

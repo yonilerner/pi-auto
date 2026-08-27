@@ -7,12 +7,12 @@ import {
 	formatSavedSettingValue,
 	registerSettingsCommand,
 	type SettingsUIDeps,
-} from "../extensions/settings-ui.ts";
+} from "../extensions/settings-ui/index.ts";
 import type { PiAutoSettings, SettingsLayerMap } from "../extensions/types.ts";
 import {
 	formatCommandPrefix,
 	parseCommandPrefixInput,
-} from "../extensions/settings-field-codecs.ts";
+} from "../extensions/settings-ui/field-codecs.ts";
 
 describe("formatLayerAttribution", () => {
 	it("marks user-global values that match the default", () => {

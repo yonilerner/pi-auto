@@ -6,9 +6,9 @@ import {
 	parseCommandPrefixInput,
 	parseNumber,
 	parseStringListItemInput,
-} from "./settings-field-codecs.ts";
-import type { PartialPiAutoSettings } from "./settings-store.ts";
-import type { PiAutoSettings, SandboxSettings } from "./types.ts";
+} from "./field-codecs.ts";
+import type { PartialPiAutoSettings } from "../settings-store.ts";
+import type { PiAutoSettings, SandboxSettings } from "../types.ts";
 
 /**
  * Layers a user can edit in the UI. ("default" and "env" are read-only.)

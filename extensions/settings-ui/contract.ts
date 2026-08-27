@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { PiAutoSettings, SettingsLayerMap } from "./types.ts";
+import type { PiAutoSettings, SettingsLayerMap } from "../types.ts";
 
 /** Runtime dependencies supplied by the extension composition root. */
 export interface SettingsUIDeps {

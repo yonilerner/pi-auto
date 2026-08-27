@@ -347,7 +347,13 @@ extensions/
   safe-commands.ts    known-safe command classifier (port of Codex's is_safe_command)
   sandbox.ts          OS sandbox wrapping (sandbox.mode); wraps @foxfirecodes/sandbox-runtime
   settings-store.ts   layered settings (defaults / user-global / per-project / env)
-  settings-ui.ts      /pi-auto-settings command implementation
+  settings-ui/        /pi-auto-settings command UI family
+    index.ts          command registration and scalar editors
+    contract.ts       runtime dependency contract
+    field-codecs.ts   field-input parsing and command-prefix formatting
+    fields.ts         editable field catalog and typed accessors
+    format.ts         UI presentation helpers
+    list-editor.ts    list-field editor and inheritance handling
   types.ts            shared types (PiAutoSettings, ReviewableAction, ...)
   policies/
     codex-guardian-policy.md  verbatim mirror of codex's guardian policy template

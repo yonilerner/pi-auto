@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getLatestDigest } from "../digest.ts";
-import { registerSettingsCommand } from "../settings-ui.ts";
+import { registerSettingsCommand } from "../settings-ui/index.ts";
 import { SandboxController } from "./sandbox-controller.ts";
 import { formatSandboxReviewLog, parseSandboxLogCount, type SandboxReviewLogEntry } from "./sandbox-interceptor.ts";
 import type { PiAutoSettings } from "../types.ts";

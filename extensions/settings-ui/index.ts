@@ -41,36 +41,36 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Input, type SelectItem, SelectList, type SelectListTheme, Text } from "@earendil-works/pi-tui";
 
-export { formatCommandPrefix, parseCommandPrefixInput } from "./settings-field-codecs.ts";
-export type { SettingsUIDeps } from "./settings-ui-contract.ts";
+export { formatCommandPrefix, parseCommandPrefixInput } from "./field-codecs.ts";
+export type { SettingsUIDeps } from "./contract.ts";
 export {
 	formatLayerAttribution,
 	formatSavedSettingNotification,
 	formatSavedSettingValue,
-} from "./settings-ui-format.ts";
-export { computeInheritedListItems } from "./settings-ui-list-editor.ts";
+} from "./format.ts";
+export { computeInheritedListItems } from "./list-editor.ts";
 
 import {
 	defaultPerProjectWritePath,
 	loadSettings,
 	saveSettingField,
 	type LoadedSettings,
-} from "./settings-store.ts";
-import type { PiAutoSettings } from "./types.ts";
-import type { SettingsUIDeps } from "./settings-ui-contract.ts";
+} from "../settings-store.ts";
+import type { PiAutoSettings } from "../types.ts";
+import type { SettingsUIDeps } from "./contract.ts";
 import {
 	type EditableLayer,
 	type FieldDescriptor,
 	FIELDS,
-} from "./settings-ui-fields.ts";
+} from "./fields.ts";
 import {
 	formatLayerAttribution,
 	formatSavedSettingNotification,
 	formatSavedSettingValue,
 	isShadowed,
 	notifyOrLog,
-} from "./settings-ui-format.ts";
-import { editArrayField } from "./settings-ui-list-editor.ts";
+} from "./format.ts";
+import { editArrayField } from "./list-editor.ts";
 
 /** Build the SelectList theme shared by the layer, field, and scalar pickers. */
 function makeSelectTheme(theme: Theme): SelectListTheme {
