@@ -25,22 +25,25 @@ import { SandboxManager } from "@foxfirecodes/sandbox-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync as fsReadFileSync, unlinkSync } from "node:fs";
+import { bareExecResultToToolContent, runBareCommand } from "../extensions/sandbox-bare-exec.ts";
 import {
 	_noiseOperationsForTest,
-	_resetNetworkAttemptsForTest,
-	buildRetryReason,
-	buildSandboxRuntimeConfig,
 	detectSandboxDenial,
 	detectSandboxDenialForCommand,
+	filterNoiseFromAnnotation,
+} from "../extensions/sandbox-denial.ts";
+import {
+	getAsrtMandatoryDenyGitExcludePatterns,
+	withSandboxGitExcludes,
+} from "../extensions/sandbox-git-excludes.ts";
+import {
+	_resetNetworkAttemptsForTest,
+	applyDangerousFilesPolicy,
+	buildRetryReason,
+	buildSandboxRuntimeConfig,
 	extractDeniedFilesystemViolation,
 	extractDeniedPathFromStderr,
-	filterNoiseFromAnnotation,
-	applyDangerousFilesPolicy,
-	getAsrtMandatoryDenyGitExcludePatterns,
 	getNetworkAttemptsSince,
-	bareExecResultToToolContent,
-	runBareCommand,
-	withSandboxGitExcludes,
 } from "../extensions/sandbox.ts";
 import type { SandboxSettings } from "../extensions/types.ts";
 

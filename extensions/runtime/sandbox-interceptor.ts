@@ -7,12 +7,11 @@ import {
 	formatMixedReviewOnlyRoutingNotice,
 } from "../sandbox-routing.ts";
 import { reviewAction } from "../reviewer.ts";
+import { bareExecResultToToolContent, runBareCommand } from "../sandbox-bare-exec.ts";
+import { detectSandboxDenialForCommand } from "../sandbox-denial.ts";
 import {
-	bareExecResultToToolContent,
 	buildRetryReason,
-	detectSandboxDenialForCommand,
 	getNetworkAttemptsSince,
-	runBareCommand,
 	wrapBashCommandForExecution,
 } from "../sandbox.ts";
 import { decideScope } from "../scope.ts";
