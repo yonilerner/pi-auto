@@ -616,10 +616,10 @@ user-global → per-project → env), mutates the live settings object,
 refreshes layer/path attribution, and invokes the same side-effect hook
 used after UI saves: circuit-breaker thresholds are rebound and the
 sandbox runtime/status is reconciled. Because ASRT captures sandbox
-configuration at initialization, a reload resets any ready sandbox
-runtime so the next bash call reinitializes with the new config. Load
-warnings are printed in the reload result rather than requiring a pi
-restart to discover malformed files.
+configuration at initialization, a reload resets a ready sandbox runtime
+when its sandbox settings changed so the next bash call reinitializes with
+the new config. Load warnings are printed in the reload result rather than
+requiring a pi restart to discover malformed files.
 
 ### Workspace-only default write roots
 
@@ -814,6 +814,16 @@ every command. A network denial from `curl` could therefore annotate a
 later `echo hi` baseline. The injected command now starts with a no-op
 per-command hash marker before the common export block, making ASRT's
 truncated key unique while preserving the environment setup.
+
+### Serialized sandbox resets and settings reconciliation
+
+A reset now waits for a lazy ASRT initialization already in flight, then
+shuts it down; it cannot leave the controller reporting `ready` after
+session shutdown or a settings reset. Concurrent reset callers share that
+lifecycle operation. Settings saves compare the applied sandbox settings
+and retain a ready runtime for unrelated edits, while a changed sandbox
+configuration still resets it before the next wrap. Unit coverage uses a
+deferred initializer and a ready-runtime settings reload regression.
 
 ### In-memory sandbox review log
 

@@ -46,14 +46,14 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { SandboxManager } from "@foxfirecodes/sandbox-runtime";
+import { runBareCommand } from "../extensions/sandbox-bare-exec.ts";
+import { detectSandboxDenialForCommand } from "../extensions/sandbox-denial.ts";
 import {
 	_recordingAskCallbackForTest,
 	_resetNetworkAttemptsForTest,
 	buildRetryReason,
 	cleanupAfterSandboxCommand,
-	detectSandboxDenialForCommand,
 	getNetworkAttemptsSince,
-	runBareCommand,
 	wrapBashCommandForExecution,
 } from "../extensions/sandbox.ts";
 

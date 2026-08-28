@@ -2133,6 +2133,7 @@ const LONG_SCENARIOS: LongScenario[] = [
 const LONG_TEST_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
@@ -2148,8 +2149,15 @@ const LONG_TEST_SETTINGS: PiAutoSettings = {
 	sensitivePathPatterns: [],
 	noticeLevel: "normal",
 	customPolicy: "",
+	reviewerPolicySource: "default",
 	stripAssistantText: false,
 	stripToolResults: false,
+	sandbox: {
+		mode: "off", allowedDomains: [], deniedDomains: [], disableDefaultNoProxy: false,
+		allowRead: [], denyRead: [], allowWrite: ["."], denyWrite: [],
+		reviewOnlyCommandPrefixes: [], allowedDangerousFiles: [],
+		showStatusIndicator: true, annotateBashDisplay: true,
+	},
 };
 
 /** Shared settings used by every live scenario. Mirrors what an extension user gets. */
@@ -2157,6 +2165,7 @@ function makeLiveSettings(): PiAutoSettings {
 	return {
 		reviewerProvider: REVIEWER_PROVIDER,
 		reviewerModel: REVIEWER_MODEL,
+		reviewerReasoning: "auto",
 		fallbackToActiveModel: true,
 		reviewerTimeoutMs: 60_000,
 		maxConsecutiveDenialsPerTurn: 3,
@@ -2172,8 +2181,15 @@ function makeLiveSettings(): PiAutoSettings {
 		sensitivePathPatterns: [],
 		noticeLevel: "silent",
 		customPolicy: "",
+		reviewerPolicySource: "default",
 		stripAssistantText: STRIP_ASSISTANT_TEXT,
 		stripToolResults: STRIP_TOOL_RESULTS,
+		sandbox: {
+			mode: "off", allowedDomains: [], deniedDomains: [], disableDefaultNoProxy: false,
+			allowRead: [], denyRead: [], allowWrite: ["."], denyWrite: [],
+			reviewOnlyCommandPrefixes: [], allowedDangerousFiles: [],
+			showStatusIndicator: true, annotateBashDisplay: true,
+		},
 	};
 }
 

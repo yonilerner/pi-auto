@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 const DEFAULTS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
+	reviewerReasoning: "auto",
 	fallbackToActiveModel: true,
 	reviewerTimeoutMs: 30_000,
 	maxConsecutiveDenialsPerTurn: 3,
@@ -575,6 +576,34 @@ describe("loadSettings perProjectPath=null", () => {
 		});
 		expect(loaded.settings.sensitivePathPatterns).toEqual(["~/.ssh", "~/.aws"]);
 		expect(loaded.paths.perProject).toBeNull();
+	});
+});
+
+describe("settings ingestion validation", () => {
+	it("ignores malformed fields while retaining valid fields and lower-layer values", () => {
+		const userPath = path.join(workdir, "user.json");
+		const projectPath = path.join(workdir, "project.json");
+		writeJson(userPath, { reviewerModel: "user-model", sandbox: { mode: "escape-only", allowWrite: ["/work"] } });
+		writeJson(projectPath, {
+			reviewerModel: 42,
+			maxTranscriptEntries: -1,
+			noticeLevel: "loud",
+			sandbox: { mode: "not-a-mode", allowWrite: ["/project"], showStatusIndicator: "yes" },
+		});
+		const loaded = loadSettings({
+			defaults: DEFAULTS,
+			cwd: workdir,
+			env: {} as NodeJS.ProcessEnv,
+			userGlobalPath: userPath,
+			perProjectPath: projectPath,
+		});
+		expect(loaded.settings.reviewerModel).toBe("user-model");
+		expect(loaded.settings.maxTranscriptEntries).toBe(DEFAULTS.maxTranscriptEntries);
+		expect(loaded.settings.sandbox.mode).toBe("escape-only");
+		expect(loaded.settings.sandbox.allowWrite).toEqual(["/project"]);
+		expect(loaded.settings.sandbox.showStatusIndicator).toBe(true);
+		expect(loaded.warnings).toHaveLength(1);
+		expect(loaded.warnings[0]).toContain("reviewerModel, maxTranscriptEntries, noticeLevel, sandbox.mode, sandbox.showStatusIndicator");
 	});
 });
 

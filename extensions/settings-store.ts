@@ -29,11 +29,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { parsePartialSettings, type PartialPiAutoSettings } from "./settings-schema.ts";
 import type { PiAutoSettings, SandboxSettings, SettingsLayer, SettingsLayerMap } from "./types.ts";
 
-export type PartialPiAutoSettings = Omit<Partial<PiAutoSettings>, "sandbox"> & {
-	sandbox?: Partial<SandboxSettings>;
-};
+export type { PartialPiAutoSettings } from "./settings-schema.ts";
 
 /**
  * Filenames as written. Tests stub the resolved paths through `loadSettings`,
@@ -195,7 +194,7 @@ export function defaultPerProjectWritePath(cwd: string): string {
  */
 function readPartialSettings(
 	filePath: string,
-): { ok: true; parsed: PartialPiAutoSettings } | { ok: false; warning?: string } {
+): { ok: true; parsed: PartialPiAutoSettings; warning?: string } | { ok: false; warning?: string } {
 	if (!existsSync(filePath)) return { ok: false };
 	let raw: string;
 	try {
@@ -210,10 +209,18 @@ function readPartialSettings(
 	} catch (err) {
 		return { ok: false, warning: `pi-auto settings: ${filePath} has invalid JSON (${(err as Error).message}); ignoring` };
 	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+	const validated = parsePartialSettings(parsed);
+	if (!validated) {
 		return { ok: false, warning: `pi-auto settings: ${filePath} must be a JSON object; ignoring` };
 	}
-	return { ok: true, parsed: parsed as PartialPiAutoSettings };
+	if (validated.invalidFields.length > 0) {
+		return {
+			ok: true,
+			parsed: validated.settings,
+			warning: `pi-auto settings: ${filePath} has invalid fields (${validated.invalidFields.join(", ")}); ignoring those fields`,
+		};
+	}
+	return { ok: true, parsed: validated.settings };
 }
 
 /**
@@ -275,6 +282,7 @@ export function loadSettings(opts: LoadSettingsOptions): LoadedSettings {
 		const result = readPartialSettings(userGlobalPath);
 		if (result.ok) {
 			applyLayer(settings, result.parsed, "user-global", layers);
+			if (result.warning) warnings.push(result.warning);
 		} else if (result.warning) {
 			warnings.push(result.warning);
 		}
@@ -283,6 +291,7 @@ export function loadSettings(opts: LoadSettingsOptions): LoadedSettings {
 		const result = readPartialSettings(perProjectPath);
 		if (result.ok) {
 			applyLayer(settings, result.parsed, "per-project", layers);
+			if (result.warning) warnings.push(result.warning);
 		} else if (result.warning) {
 			warnings.push(result.warning);
 		}
