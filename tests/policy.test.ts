@@ -72,6 +72,37 @@ describe("buildReviewerSystemPrompt", () => {
 		expect(prompt).toMatch(/prompt injection|attacker|adversarial/i);
 	});
 
+	it("authorizes task-scoped read-only review independently of provider while preserving mutation and secret boundaries", () => {
+		const prompt = buildReviewerSystemPrompt(defaults);
+		expect(prompt).toMatch(/read-only investigation of ordinary, non-secret data is low risk/i);
+		expect(prompt).toMatch(/specifically identified resource or concrete subject/i);
+		expect(prompt).toMatch(/regardless of provider or protocol/i);
+		expect(prompt).toMatch(/named URL/);
+		expect(prompt).toMatch(/package metadata/);
+		expect(prompt).toMatch(/gh pr view/);
+		expect(prompt).toMatch(/Do NOT require separate approval for each read-only endpoint/i);
+		expect(prompt).toMatch(/request to review one resource does not authorize unrelated resources/i);
+		expect(prompt).toMatch(/credentials, secrets, or inherently sensitive data retains its intrinsic high risk/i);
+		expect(prompt).toMatch(/does NOT authorize execution, remote mutations/i);
+		expect(prompt).toMatch(/ordinary request to "review" means inspect and analyze/i);
+		expect(prompt).toMatch(/do not reinterpret it as permission to publish or submit a review, comment/i);
+		expect(prompt).toMatch(/mutation merely targets the resource being reviewed.*user_authorization as "unknown", not "medium"/i);
+		expect(prompt).toMatch(/Judge API calls by their demonstrated effect, not the HTTP method alone/i);
+		expect(prompt).toMatch(/demonstrably read-only POST query/i);
+		expect(prompt).toMatch(/GraphQL query with no mutation/);
+		expect(prompt).toMatch(/POST whose semantics are unclear should be presumed state-changing/i);
+		expect(prompt).toMatch(/outbound uploads and remote mutations as high risk/i);
+		expect(prompt).toMatch(/telemetry submissions/);
+		expect(prompt).toMatch(/merging|commenting/);
+	});
+
+	it("makes later user revocations supersede stale authorization", () => {
+		const prompt = buildReviewerSystemPrompt(defaults);
+		expect(prompt).toMatch(/Later.*user.*messages supersede conflicting earlier messages/i);
+		expect(prompt).toMatch(/revocation.*withdraws an earlier grant/i);
+		expect(prompt).toMatch(/do not use stale authorization/i);
+	});
+
 	it("tells the reviewer to score unknown when only assistant narration supports the action", () => {
 		const prompt = buildReviewerSystemPrompt(defaults);
 		expect(prompt).toMatch(/unknown/);

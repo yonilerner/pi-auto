@@ -26,12 +26,6 @@ PI_AUTO_LIVE_TESTS=1 npx vitest run tests/live/digest-summarizer.test.ts
 Run the whole live suite (`npm run test:live` / `npm run test:live:5x`) only
 when explicitly asked or as a final check.
 
-## Git
-
-Use gitbutler for all git operations in this repo. The skill is at
-[`.agents/skills/gitbutler/SKILL.md`](./.agents/skills/gitbutler/SKILL.md);
-load it before invoking any git command.
-
 ## History doc
 
 [`docs/HISTORY.md`](./docs/HISTORY.md) is the canonical record of the

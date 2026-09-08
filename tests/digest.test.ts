@@ -15,6 +15,7 @@ import {
 	MAX_DIGEST_CHARS,
 	stripPoisonLines,
 } from "../extensions/digest.ts";
+import { automaticReasoningForModel } from "../extensions/reasoning.ts";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -82,6 +83,17 @@ describe("getLatestDigest", () => {
 		const result = getLatestDigest(sm);
 		expect(result?.upToEntryId).toBeNull();
 		expect(result?.updatedAt).toBe(0);
+	});
+});
+
+describe("digest reasoning compatibility", () => {
+	it("uses reasoning-off when the model advertises an explicit off mapping", () => {
+		expect(automaticReasoningForModel({ thinkingLevelMap: { off: "none", xhigh: "xhigh", max: "max" } })).toBe("off");
+	});
+
+	it("uses minimal when reasoning-off is unavailable", () => {
+		expect(automaticReasoningForModel({ thinkingLevelMap: { off: null } })).toBe("minimal");
+		expect(automaticReasoningForModel({})).toBe("minimal");
 	});
 });
 

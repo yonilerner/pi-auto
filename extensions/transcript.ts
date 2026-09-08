@@ -71,7 +71,10 @@ export function buildTranscript(opts: BuildOptions): string {
 	const recentIds = new Set(recent.map((e) => e.sourceId));
 
 	// Section 4: action-keyed retrieval over the entries NOT already in `recent`.
-	const olderEntries = allTranscriptEntries.filter((e) => !recentIds.has(e.sourceId));
+	const firstUserIsAnchored = firstUserMessage !== undefined && !recentIds.has(firstUserMessage.sourceId);
+	const olderEntries = allTranscriptEntries.filter(
+		(e) => !recentIds.has(e.sourceId) && (!firstUserIsAnchored || e.sourceId !== firstUserMessage.sourceId),
+	);
 	const pinnedRelated = pickActionRelated(olderEntries, action, settings.maxPinnedRelatedEntries);
 	const pinnedIds = new Set(pinnedRelated.map((e) => e.sourceId));
 
@@ -81,13 +84,14 @@ export function buildTranscript(opts: BuildOptions): string {
 		.map((s, i) => `[summary ${i + 1}/${summaries.length}] ${truncateMiddle(s, settings.maxEntryChars)}`);
 
 	// Build skipped-count headers so the reviewer knows the gap is real.
-	const omittedOlder = allTranscriptEntries.length - recent.length - pinnedRelated.length;
+	const anchoredCount = firstUserIsAnchored ? 1 : 0;
+	const omittedOlder = allTranscriptEntries.length - recent.length - pinnedRelated.length - anchoredCount;
 
 	const sections: string[] = [];
 	if (projectInstructionsSection) sections.push(projectInstructionsSection);
 	if (digestSection) sections.push(digestSection);
 
-	if (firstUserMessage && !recentIds.has(firstUserMessage.sourceId)) {
+	if (firstUserIsAnchored) {
 		sections.push(`[first user message]\n${renderEntry(firstUserMessage)}`);
 	}
 
@@ -105,7 +109,7 @@ export function buildTranscript(opts: BuildOptions): string {
 		sections.push(
 			`[earlier context related to this action] ${note}\n${pinnedLines.join("\n")}`,
 		);
-		const remainingOmitted = allTranscriptEntries.length - recent.length - pinnedRelated.length;
+		const remainingOmitted = allTranscriptEntries.length - recent.length - pinnedRelated.length - anchoredCount;
 		if (remainingOmitted > 0) {
 			sections.push(`[…${remainingOmitted} other older entries omitted…]`);
 		}
@@ -216,16 +220,55 @@ function pickActionRelated(
 	const keywords = actionKeywords(action);
 	if (keywords.length === 0) return [];
 
-	const scored = olderEntries.map((e) => ({ entry: e, score: scoreText(e.text, keywords) }));
-	scored.sort((a, b) => b.score - a.score);
+	const scored = olderEntries.map((e, index) => ({ entry: e, index, score: scoreText(e.text, keywords) }));
 
 	// Only include entries with non-trivial score (more than just the tool name).
 	const minScore = 1.5;
-	const picked = scored.filter((s) => s.score >= minScore).slice(0, maxPinned).map((s) => s.entry);
+	const eligible = scored.filter((s) => s.score >= minScore);
+	const pickedIds = new Set<string>();
+
+	// Tool calls/results usually overlap the action much more heavily than the
+	// user's authorization wording. Without a reserved user slot, six noisy
+	// `gh search ...` calls can crowd out an older "you have permission to use
+	// GitHub" message — the exact failure seen in session 019f9563. Prefer up to
+	// two authorization-shaped user messages; if none exist, reserve one slot
+	// for the best action-related user message.
+	const userCandidates = eligible.filter((s) => s.entry.role === "user");
+	const authorizationUsers = scored
+		.filter(
+			(s) =>
+				s.entry.role === "user" &&
+				s.score > 0 &&
+				(hasAuthorizationCue(s.entry.text) || hasScopeConstraintCue(s.entry.text)),
+		)
+		.sort((a, b) => b.index - a.index)
+		.slice(0, Math.min(2, maxPinned));
+	const reservedUsers = authorizationUsers.length > 0
+		? authorizationUsers
+		: userCandidates.sort((a, b) => b.score - a.score).slice(0, Math.min(1, maxPinned));
+	for (const candidate of reservedUsers) pickedIds.add(candidate.entry.sourceId);
+
+	eligible.sort((a, b) => b.score - a.score);
+	for (const candidate of eligible) {
+		if (pickedIds.size >= maxPinned) break;
+		pickedIds.add(candidate.entry.sourceId);
+	}
 
 	// Preserve original (chronological) order in the rendered output.
-	const pickedIds = new Set(picked.map((p) => p.sourceId));
 	return olderEntries.filter((e) => pickedIds.has(e.sourceId));
+}
+
+function hasAuthorizationCue(text: string): boolean {
+	return /\b(?:authori[sz](?:e|ed|ation)|permission|allowed|approved|go ahead|feel free|use\s+(?:the\s+)?(?:gh|github))\b/i.test(text);
+}
+
+function hasScopeConstraintCue(text: string): boolean {
+	return (
+		/\b(?:do not|don't|never|stop|revok(?:e|ed)|withdraw(?:n)?|no longer|read[- ]only|view[- ]only)\b/i.test(text) ||
+		/\bno\s+(?:merg\w*|comment\w*|creat\w*|edit\w*|delet\w*|upload\w*|post\w*|put\w*|patch\w*|push\w*|writ\w*|mutat\w*|remote\s+(?:changes?|actions?|operations?)|external\s+(?:changes?|actions?|side effects?))\b/i.test(
+			text,
+		)
+	);
 }
 
 /**
