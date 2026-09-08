@@ -242,6 +242,79 @@ describe("buildTranscript: D — action-keyed pinned retrieval", () => {
 		expect(pinnedCount).toBe(3);
 	});
 
+	it("reserves a pinned slot for an explicit user authorization amid higher-overlap tool noise", () => {
+		const entries: FakeEntry[] = [
+			userMsg("u-first", "review https://github.com/discord/discord/pull/271374"),
+			userMsg("u-auth", "YOU ARE ALLOWED TO USE GH CLI. You have permission to use GitHub for this review."),
+		];
+		for (let i = 0; i < 10; i++) {
+			entries.push(
+				toolCallMsg(`tc-${i}`, "bash", {
+					command: `gh search prs 'user_age_conservative_${i}' --repo discord/discord --json number,title,state,url,body`,
+				}),
+			);
+			entries.push(
+				toolResultMsg(
+					`tr-${i}`,
+					"bash",
+					`GitHub search result for user_age_conservative_${i} in discord/discord with number title state url body`,
+				),
+			);
+		}
+		for (let i = 0; i < 5; i++) entries.push(asstMsg(`recent-${i}`, `recent unrelated step ${i}`));
+
+		const action: ReviewableAction = {
+			toolName: "bash",
+			toolCallId: "tc-review",
+			label: "bash: gh search prs user_age_conservative",
+			payload: {
+				tool: "bash",
+				command: "gh search prs 'user_age_conservative' --repo discord/discord --json number,title,state,url,body",
+				cwd: "/home/me/project",
+				retryReason: "Sandbox denied network access to api.github.com:443.",
+			},
+		};
+		const settings = { ...BASE_SETTINGS, maxTranscriptEntries: 5, maxPinnedRelatedEntries: 6 };
+		const out = buildTranscript({ sessionManager: fakeSessionManager(entries), settings, action });
+		expect(out).toContain("YOU ARE ALLOWED TO USE GH CLI");
+		expect(out.match(/review https:\/\/github\.com\/discord\/discord\/pull\/271374/g)).toHaveLength(1);
+	});
+
+	it("pins a later revocation ahead of stale grants amid higher-overlap tool noise", () => {
+		const entries: FakeEntry[] = [
+			userMsg("u-first", "review https://github.com/discord/discord/pull/271374"),
+			userMsg("u-grant-1", "You are authorized to run gh pr merge 271374 in discord/discord."),
+			userMsg("u-grant-2", "You have permission to use GitHub to merge PR 271374."),
+			userMsg("u-revoke", "Read-only access only. No merges."),
+			userMsg("u-unrelated-constraint-1", "Do not edit local files."),
+			userMsg("u-unrelated-constraint-2", "Never run the test suite."),
+		];
+		for (let i = 0; i < 10; i++) {
+			entries.push(
+				toolCallMsg(`tc-${i}`, "bash", {
+					command: `gh pr view 271374 --repo discord/discord --json number,title,state,url,body,mergeable,reviewDecision`,
+				}),
+			);
+		}
+		for (let i = 0; i < 5; i++) entries.push(asstMsg(`recent-${i}`, `recent unrelated step ${i}`));
+
+		const action: ReviewableAction = {
+			toolName: "bash",
+			toolCallId: "tc-review",
+			label: "bash: gh pr merge 271374",
+			payload: {
+				tool: "bash",
+				command: "gh pr merge 271374 --repo discord/discord --merge",
+				cwd: "/home/me/project",
+				retryReason: "Sandbox denied network access to api.github.com:443.",
+			},
+		};
+		const settings = { ...BASE_SETTINGS, maxTranscriptEntries: 5, maxPinnedRelatedEntries: 6 };
+		const out = buildTranscript({ sessionManager: fakeSessionManager(entries), settings, action });
+		expect(out).toContain("Read-only access only. No merges.");
+		expect(out.indexOf("You have permission to use GitHub")).toBeLessThan(out.indexOf("Read-only access only"));
+	});
+
 	it("does not pin anything when nothing matches the action keywords", () => {
 		const entries: FakeEntry[] = [];
 		for (let i = 0; i < 30; i++) {
@@ -408,6 +481,7 @@ describe("buildTranscript: skipped-count marker", () => {
 		}
 		const settings = { ...BASE_SETTINGS, maxTranscriptEntries: 5, maxPinnedRelatedEntries: 0 };
 		const out = buildTranscript({ sessionManager: fakeSessionManager(entries), settings, action: NOOP_ACTION });
-		expect(out).toMatch(/45 older entries omitted/);
+		expect(out).toMatch(/44 older entries omitted/);
+		expect(out).toContain("[first user message]\n[user] m0");
 	});
 });

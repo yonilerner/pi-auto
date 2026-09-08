@@ -53,7 +53,8 @@ export type SandboxMode = "off" | "escape-only" | "review-then-escape";
  * Reasoning-effort level passed to the reviewer model. Mirrors pi-ai's
  * `ModelThinkingLevel` plus an `"auto"` sentinel that means "pi-auto picks
  * a sensible default for the current reviewer type" (`"low"` for
- * `codex-auto-review`, `"minimal"` otherwise). Kept as a local union so
+ * `codex-auto-review`, reasoning-off when explicitly supported, and
+ * `"minimal"` otherwise). Kept as a local union so
  * `types.ts` stays decoupled from pi-ai's evolving surface.
  */
 export type ReviewerReasoningLevel =
@@ -197,12 +198,10 @@ export interface PiAutoSettings {
 	/** Model id, e.g. "gpt-5-mini". */
 	reviewerModel: string;
 	/**
-	 * Reasoning effort passed to the reviewer model. `"auto"` (default) lets
-	 * pi-auto pick per reviewer type: `"low"` for `codex-auto-review` (per
-	 * OpenAI's fine-tuning), `"minimal"` otherwise. Override when a specific
-	 * model doesn't accept the default — e.g. `gpt-5.6-luna` at `"minimal"`
-	 * returns empty responses because its `thinkingLevelMap` only exposes
-	 * `off/xhigh/max`; use `"off"` or `"low"` instead.
+	 * Reasoning effort passed to the reviewer model. `"auto"` (default) uses
+	 * `"low"` for `codex-auto-review`, reasoning-off when the configured model
+	 * explicitly supports it, and `"minimal"` otherwise. Any explicit value
+	 * overrides automatic selection.
 	 */
 	reviewerReasoning: ReviewerReasoningLevel;
 	/** Whether to fall back to the active agent model if the reviewer model is unavailable. */

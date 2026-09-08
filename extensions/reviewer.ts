@@ -8,6 +8,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildCodexAutoReviewSystemPrompt, buildCodexAutoReviewUserPrompt } from "./codex-prompt.ts";
 import { getLatestDigest } from "./digest.ts";
 import { buildReviewerSystemPrompt } from "./policy.ts";
+import { automaticReasoningForModel } from "./reasoning.ts";
 import { resolveReviewerModel } from "./reviewer-model.ts";
 import { buildTranscript } from "./transcript.ts";
 import type { PiAutoSettings, ReviewableAction, ReviewerAssessment } from "./types.ts";
@@ -102,15 +103,13 @@ export async function reviewAction(
 	const t0 = Date.now();
 	try {
 		// codex-auto-review is fine-tuned for this task at "low" reasoning per
-		// OpenAI's blog. `settings.reviewerReasoning === "auto"` (default) picks
-		// that automatically; any other value overrides. Motivating case: gpt-5.6-luna
-		// returns empty responses at "minimal" (its thinkingLevelMap only exposes
-		// off/xhigh/max), so users can set the setting to "off" or "low" instead.
+		// OpenAI's blog. For other reviewers, "auto" uses reasoning-off when the
+		// model explicitly supports it and minimal reasoning otherwise.
 		const reasoningLevel =
 			settings.reviewerReasoning === "auto"
 				? useCodexFormat
 					? "low"
-					: "minimal"
+					: automaticReasoningForModel(model)
 				: settings.reviewerReasoning;
 		// pi-ai types `reasoning` as `ThinkingLevel` (which excludes "off"), but
 		// the runtime handles "off" fine — openai-responses.js maps it to

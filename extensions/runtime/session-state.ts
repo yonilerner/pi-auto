@@ -8,9 +8,8 @@ import { ReviewTurnController } from "./review-turn-controller.ts";
 export const DEFAULT_SETTINGS: PiAutoSettings = {
 	reviewerProvider: "openai",
 	reviewerModel: "gpt-5-mini",
-	// "auto" preserves the historical behavior (low for codex-auto-review,
-	// minimal otherwise). Override in the UI/JSON if the configured model
-	// doesn't accept minimal — gpt-5.6-luna is the current motivating case.
+	// "auto" uses low for codex-auto-review, reasoning-off when the model
+	// explicitly supports it, and minimal otherwise.
 	reviewerReasoning: "auto",
 	// Default false: an unintended fallback to the session model on a typo or
 	// outage is usually worse than the reviewer failing closed (we fall back

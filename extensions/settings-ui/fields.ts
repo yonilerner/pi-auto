@@ -159,7 +159,7 @@ export const FIELDS: FieldDescriptor[] = [
 	{
 		id: "reviewerReasoning",
 		label: "Reviewer reasoning effort",
-		help: "auto = pi-auto picks (low for codex-auto-review, minimal otherwise). Override when the model doesn't accept the default — e.g. gpt-5.6-luna returns empty responses at minimal.",
+		help: "auto = pi-auto picks low for codex-auto-review, off when the model explicitly supports reasoning-off, and minimal otherwise.",
 		kind: "enum",
 		enumValues: ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"],
 		settingsKey: "reviewerReasoning",

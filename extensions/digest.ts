@@ -19,6 +19,7 @@
 
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { automaticReasoningForModel } from "./reasoning.ts";
 import type { PiAutoSettings } from "./types.ts";
 
 export const DIGEST_CUSTOM_TYPE = "pi-auto-digest";
@@ -124,6 +125,7 @@ async function runDigestUpdate(
 
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), DIGEST_UPDATE_TIMEOUT_MS);
+	const reasoning = automaticReasoningForModel(model) as "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 	try {
 		const response = await completeSimple(
@@ -143,7 +145,7 @@ async function runDigestUpdate(
 				headers: auth.headers,
 				signal: controller.signal,
 				maxTokens: 2_000,
-				reasoning: "minimal",
+				reasoning,
 			},
 		);
 

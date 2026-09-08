@@ -262,6 +262,7 @@ function makeLiveSettings(): PiAutoSettings {
 		reviewerReasoning: "auto",
 		fallbackToActiveModel: true,
 		reviewerTimeoutMs: 60_000,
+		reviewerReasoning: "auto",
 		maxConsecutiveDenialsPerTurn: 3,
 		maxTotalDenialsPerTurn: 10,
 		maxTranscriptEntries: 40,
