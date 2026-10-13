@@ -1,271 +1,157 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import * as path from "node:path";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerPiAuto, type RuntimeDependencies } from "../extensions/pi-auto.ts";
+import type { SandboxCommandOptions, SandboxOutcome } from "../extensions/sandbox.ts";
+import { DEFAULT_SETTINGS } from "../extensions/settings.ts";
+import type { ReviewResult, Settings } from "../extensions/types.ts";
 
-interface TestSandboxController {
-	state: { kind: string; reason?: string; cwd?: string; settings?: unknown };
-	reset: ReturnType<typeof vi.fn>;
-}
+const directories: string[] = [];
+afterEach(() => { for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true }); });
+const allowed: ReviewResult = { kind: "assessed", assessment: { risk_level: "medium", user_authorization: "high", evidence: ["request"], rationale: "Requested work" }, decision: { outcome: "allow", reason: "authorized" }, latencyMs: 5 };
+const denied: ReviewResult = { kind: "assessed", assessment: { risk_level: "high", user_authorization: "unknown", evidence: [], rationale: "Not requested" }, decision: { outcome: "deny", reason: "No user authorization" }, latencyMs: 5 };
 
-const reviewAction = vi.hoisted(() => vi.fn());
-const sandboxControllers = vi.hoisted(() => [] as TestSandboxController[]);
-
-vi.mock("../extensions/reviewer.ts", () => ({ reviewAction }));
-vi.mock("../extensions/sandbox.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../extensions/sandbox.ts")>();
-	return {
-		...actual,
-		checkSandboxAvailability: vi.fn(() => ({ supportedPlatform: true, errors: [], warnings: [] })),
-	};
-});
-vi.mock("../extensions/runtime/sandbox-controller.ts", () => {
-	class SandboxController {
-		state: TestSandboxController["state"] = { kind: "disabled" };
-		readonly reset = vi.fn(async () => {
-			this.state = { kind: "disabled" };
-		});
-		readonly ensure = vi.fn(async () => this.state);
-		readonly markBroken = vi.fn((reason: string) => {
-			this.state = { kind: "broken", reason };
-		});
-
-		constructor() {
-			sandboxControllers.push(this);
-		}
-	}
-	return { SandboxController };
-});
-
-import piAuto from "../extensions/pi-auto.ts";
-import runtimePiAuto from "../extensions/runtime/extension-runtime.ts";
-
-type EventHandler = (event: any, ctx: ExtensionContext) => Promise<unknown> | unknown;
-type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
-
-class FakeExtensionAPI {
-	readonly events = new Map<string, EventHandler>();
-	readonly commands = new Map<string, { description?: string; handler: CommandHandler }>();
-
-	on(event: string, handler: EventHandler): void {
-		this.events.set(event, handler);
-	}
-
-	registerCommand(name: string, command: { description?: string; handler: CommandHandler }): void {
-		this.commands.set(name, command);
-	}
-
-	asExtensionAPI(): ExtensionAPI {
-		return this as unknown as ExtensionAPI;
-	}
-}
-
-function makeContext(cwd: string, hasUI = false): ExtensionContext {
-	return {
-		hasUI,
-		mode: hasUI ? "tui" : "print",
-		cwd,
-		ui: {
-			notify: vi.fn(),
-			select: vi.fn(),
-			setStatus: vi.fn(),
-		},
-		abort: vi.fn(),
-		isIdle: () => true,
-		hasPendingMessages: () => false,
-		shutdown: vi.fn(),
-		getContextUsage: () => undefined,
-		compact: vi.fn(),
-		getSystemPrompt: () => "",
-		sessionManager: { getBranch: () => [], getEntries: () => [] } as unknown as ExtensionContext["sessionManager"],
-		modelRegistry: {} as ExtensionContext["modelRegistry"],
-		model: undefined,
-		signal: undefined,
-	} as unknown as ExtensionContext;
-}
-
-function deniedReview() {
-	return {
-		kind: "assessed",
-		assessment: {
-			outcome: "deny",
-			risk_level: "high",
-			user_authorization: "none",
-			rationale: "deterministic test denial",
-		},
-		diagnostics: {
-			modelSource: "configured",
-			promptFormat: "pi-auto",
-			latencyMs: 0,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			rawText: "",
-		},
-	};
-}
-
-function toolCall(id: string) {
-	return {
-		toolName: "bash",
-		toolCallId: id,
-		input: { command: "rm -rf /tmp/test-target" },
-	};
-}
-
-describe("default pi-auto extension lifecycle", () => {
-	it("keeps the package entrypoint bound to the runtime implementation", () => {
-		expect(piAuto).toBe(runtimePiAuto);
+function fixture(options: { settings?: Settings; result?: ReviewResult; hasUI?: boolean; errors?: string[]; customBash?: boolean } = {}) {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-auto-runtime-")); directories.push(cwd);
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let command!: (args: string, ctx: any) => Promise<void>;
+	const pi = {
+		on: vi.fn((name, handler) => handlers.set(name, handler)),
+		registerTool: vi.fn(),
+		registerCommand: vi.fn((_name, definition) => { command = definition.handler; }),
+		getAllTools: () => [
+			{ name: "bash", description: "Existing bash tool", parameters: Type.Object({ command: Type.String() }), sourceInfo: { source: options.customBash ? "extension" : "builtin" } },
+			...['read', 'write', 'edit', 'grep', 'find', 'ls'].map((name) => ({ name, description: `Builtin ${name}`, sourceInfo: { source: "builtin" } })),
+			{ name: "send_mail", description: "Send a message using the authenticated account", sourceInfo: { source: "extension" } },
+		],
+	} as unknown as ExtensionAPI;
+	const review = vi.fn(async (..._args: Parameters<RuntimeDependencies["reviewAction"]>): Promise<ReviewResult> => options.result ?? allowed);
+	const finish = vi.fn(async (_output: string, _isError: boolean): Promise<SandboxOutcome> => ({ blocked: false, denials: [] }));
+	const cancel = vi.fn(async () => {});
+	const prepare = vi.fn(async (input: SandboxCommandOptions) => ({ id: "wrapper", command: `wrapped(${input.command})`, sandboxCommand: input.command, finish, cancel }));
+	const persist = vi.fn(async (_cwd: string, _record: unknown) => {});
+	const reset = vi.fn(async () => {});
+	registerPiAuto(pi, {
+		loadSettings: () => ({ settings: structuredClone(options.settings ?? DEFAULT_SETTINGS), errors: options.errors ?? [], paths: { user: "/tmp/pi-auto-v2.json", project: join(cwd, ".agents/pi-auto-v2.json") } }),
+		reviewAction: review, prepareSandboxCommand: prepare, persistDecision: persist, shutdownSandbox: reset,
+		checkSandboxAvailability: () => ({ available: true, errors: [], warnings: [] }),
 	});
+	const ctx = { cwd, hasUI: options.hasUI ?? false, signal: undefined, isIdle: () => true, waitForIdle: vi.fn(async () => {}), ui: { setStatus: vi.fn(), notify: vi.fn(), confirm: vi.fn(async () => false) } } as unknown as ExtensionContext;
+	const event = (toolName: string, input: Record<string, unknown>, toolCallId = "call") => ({ type: "tool_call", toolName, input, toolCallId }) as ToolCallEvent;
+	const call = (toolName: string, input: Record<string, unknown>, id = "call") => handlers.get("tool_call")!(event(toolName, input, id), ctx);
+	const result = (input: Record<string, unknown>, id = "call", content = [{ type: "text", text: "ok" }], isError = false) => handlers.get("tool_result")!({ type: "tool_result", toolName: "bash", toolCallId: id, input, content, details: { existing: true }, isError }, ctx);
+	return { ctx, pi, review, prepare, finish, cancel, persist, reset, handlers, call, result, command: (args: string) => command(args, ctx) };
+}
 
-	let root: string | undefined;
-	let previousAgentDir: string | undefined;
-
-	afterEach(() => {
-		reviewAction.mockReset();
-		sandboxControllers.length = 0;
-		if (previousAgentDir === undefined) delete process.env.PI_AGENT_DIR;
-		else process.env.PI_AGENT_DIR = previousAgentDir;
-		if (root) rmSync(root, { recursive: true, force: true });
-		root = undefined;
-		previousAgentDir = undefined;
+describe("existing-tool wrapper lifecycle", () => {
+	it("registers no bash replacement and keeps ordinary workspace reads immediate", async () => {
+		const f = fixture();
+		expect(f.pi.registerTool).not.toHaveBeenCalled();
+		expect(await f.call("read", { path: "README.md" })).toBeUndefined();
+		expect(f.review).not.toHaveBeenCalled();
 	});
-
-	it("keeps a ready sandbox across unrelated settings reloads", async () => {
-		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
-		mkdirSync(path.join(root, ".agents"), { recursive: true });
-		writeFileSync(
-			path.join(root, ".agents", "pi-auto.json"),
-			JSON.stringify({ enableDigest: false, reviewerModel: "first", sandbox: { mode: "escape-only" } }),
-		);
-
-		const api = new FakeExtensionAPI();
-		piAuto(api.asExtensionAPI());
-		const ctx = makeContext(root);
-		await api.events.get("session_start")?.({}, ctx);
-		const controller = sandboxControllers.at(-1);
-		if (!controller) throw new Error("missing sandbox controller");
-		controller.state = { kind: "ready", cwd: root, settings: {} };
-
-		writeFileSync(
-			path.join(root, ".agents", "pi-auto.json"),
-			JSON.stringify({ enableDigest: false, reviewerModel: "second", sandbox: { mode: "escape-only" } }),
-		);
-		await api.commands.get("pi-auto-reload-settings")?.handler("", ctx);
-		expect(controller.reset).not.toHaveBeenCalled();
-
-		writeFileSync(
-			path.join(root, ".agents", "pi-auto.json"),
-			JSON.stringify({
-				enableDigest: false,
-				reviewerModel: "second",
-				sandbox: { mode: "escape-only", allowedDomains: ["example.com"] },
-			}),
-		);
-		await api.commands.get("pi-auto-reload-settings")?.handler("", ctx);
-		expect(controller.reset).toHaveBeenCalledTimes(1);
+	it("reviews consequential commands before preparing their wrapper", async () => {
+		const f = fixture({ result: denied });
+		expect(await f.call("bash", { command: "rm -rf src" })).toMatchObject({ block: true });
+		expect(f.review).toHaveBeenCalledOnce();
+		expect(f.prepare).not.toHaveBeenCalled();
 	});
-
-	it("routes disable and enable commands through the same live review gate", async () => {
-		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
-		mkdirSync(path.join(root, ".agents"), { recursive: true });
-		writeFileSync(
-			path.join(root, ".agents", "pi-auto.json"),
-			JSON.stringify({ reviewerModel: "integration-reviewer", enableDigest: false, sandbox: { mode: "off" } }),
-		);
-		const api = new FakeExtensionAPI();
-		piAuto(api.asExtensionAPI());
-		const ctx = makeContext(root, true);
-		await api.events.get("session_start")?.({}, ctx);
-		reviewAction.mockResolvedValue(deniedReview());
-		const toolHandler = api.events.get("tool_call");
-		if (!toolHandler) throw new Error("missing tool handler");
-
-		expect(await toolHandler(toolCall("reviewed"), ctx)).toMatchObject({ block: true });
-		expect(reviewAction).toHaveBeenCalledTimes(1);
-		await api.commands.get("pi-auto-disable")?.handler("", ctx);
-		expect(await toolHandler(toolCall("bypassed"), ctx)).toBeUndefined();
-		expect(reviewAction).toHaveBeenCalledTimes(1);
-		await api.commands.get("pi-auto-enable")?.handler("", ctx);
-		expect(await toolHandler(toolCall("reviewed-again"), ctx)).toMatchObject({ block: true });
-		expect(reviewAction).toHaveBeenCalledTimes(2);
+	it("keeps sandbox wrapping and directive host review active when builtin pre-review is paused", async () => {
+		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
+		const f = fixture({ settings });
+		const input = { command: "rm -rf scratch", timeout: 17, customArgument: "preserved" };
+		await f.call("bash", input);
+		expect(input).toEqual({ command: "wrapped(rm -rf scratch)", timeout: 17, customArgument: "preserved" });
+		expect(f.review).not.toHaveBeenCalled();
+		await f.result(input);
+		expect(input.command).toBe("rm -rf scratch");
+		const host = { command: "# pi-auto: host Need additional access\nprintf ok", timeout: 17 };
+		await f.call("bash", host, "host");
+		expect(f.review).toHaveBeenCalledOnce();
+		expect(f.review.mock.calls[0]?.[0]).toMatchObject({ execution: "host", input: { command: "printf ok", timeout: 17 } });
+		expect(host).toEqual({ command: "printf ok", timeout: 17 });
+		expect(f.prepare).toHaveBeenCalledOnce();
 	});
-
-	it("registers its default surface, loads session settings, and scopes denials to turns", async () => {
-		root = mkdtempSync(path.join(tmpdir(), "pi-auto-extension-"));
-		const agentDir = path.join(root, "agent");
-		mkdirSync(path.join(root, ".agents"), { recursive: true });
-		writeFileSync(
-			path.join(root, ".agents", "pi-auto.json"),
-			JSON.stringify({
-				reviewerModel: "integration-reviewer",
-				enableDigest: false,
-				maxConsecutiveDenialsPerTurn: 2,
-				maxTotalDenialsPerTurn: 2,
-				sandbox: { mode: "off" },
-			}),
-		);
-		previousAgentDir = process.env.PI_AGENT_DIR;
-		process.env.PI_AGENT_DIR = agentDir;
-
-		const api = new FakeExtensionAPI();
-		piAuto(api.asExtensionAPI());
-
-		expect([...api.events.keys()].sort()).toEqual([
-			"session_shutdown",
-			"session_start",
-			"tool_call",
-			"tool_result",
-			"turn_end",
-			"turn_start",
-		]);
-		expect([...api.commands.keys()].sort()).toEqual([
-			"pi-auto",
-			"pi-auto-disable",
-			"pi-auto-enable",
-			"pi-auto-reload-settings",
-			"pi-auto-sandbox",
-			"pi-auto-sandbox-log",
-			"pi-auto-settings",
-			"pi-auto-toggle-announce",
-			"sandbox-log",
-			"sandbox-review-log",
-		]);
-
-		const inspectionCtx = makeContext(root, true);
-		await api.events.get("session_start")?.({}, inspectionCtx);
-		(inspectionCtx.ui.notify as ReturnType<typeof vi.fn>).mockClear();
-		await api.commands.get("pi-auto")?.handler("", inspectionCtx);
-		const statusMessage = (inspectionCtx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-		expect(statusMessage).toContain("openai/integration-reviewer");
-		expect(statusMessage).toContain("rolling digest:            off");
-
-		const ctx = makeContext(root);
-		reviewAction.mockResolvedValue(deniedReview());
-		const toolHandler = api.events.get("tool_call");
-		const turnStart = api.events.get("turn_start");
-		const turnEnd = api.events.get("turn_end");
-		if (!toolHandler || !turnStart || !turnEnd) throw new Error("missing lifecycle handler");
-
-		turnStart({ turnIndex: 7 }, ctx);
-		expect(await toolHandler(toolCall("first"), ctx)).toMatchObject({ block: true });
-		turnEnd({}, ctx);
-		expect(await toolHandler(toolCall("after-end"), ctx)).toMatchObject({
-			block: true,
-			reason: expect.not.stringContaining("circuit breaker tripped"),
-		});
-
-		turnStart({ turnIndex: 8 }, ctx);
-		expect(await toolHandler(toolCall("new-turn-first"), ctx)).toMatchObject({ block: true });
-		expect(await toolHandler(toolCall("new-turn-second"), ctx)).toMatchObject({
-			block: true,
-			reason: expect.stringContaining("circuit breaker tripped"),
-		});
+	it("appends denial evidence while retaining existing output and never replaying", async () => {
+		const f = fixture();
+		f.finish.mockResolvedValueOnce({ blocked: true, denials: ["write denied"] });
+		const input = { command: "echo ok" };
+		await f.call("bash", input);
+		const content = [{ type: "text", text: "existing partial output" }];
+		const patch = await f.result(input, "call", content, true);
+		expect(patch).toMatchObject({ isError: true, content: [content[0], { type: "text", text: expect.stringContaining("not replayed") }] });
+		expect(patch).not.toHaveProperty("details");
+		expect(f.prepare).toHaveBeenCalledOnce();
+		expect(f.review).not.toHaveBeenCalled();
+		expect(input.command).toBe("echo ok");
+	});
+	it("returns clean custom results unchanged and cancels abandoned preparations after a later blocker", async () => {
+		const f = fixture();
+		const input = { command: "echo ok" };
+		await f.call("bash", input);
+		expect(await f.result(input)).toBeUndefined();
+		expect(f.finish).toHaveBeenCalledOnce();
+		await f.call("bash", input, "blocked-later");
+		await f.handlers.get("tool_execution_end")!({ toolName: "bash", toolCallId: "blocked-later", isError: true }, f.ctx);
+		expect(f.cancel).toHaveBeenCalledOnce();
+		expect(input.command).toBe("echo ok");
+	});
+	it("automatically reviews custom bash even while builtin pre-review is paused", async () => {
+		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
+		const f = fixture({ settings, customBash: true });
+		await f.call("bash", { command: "echo ok", plugin: "value" });
+		expect(f.review.mock.calls[0]?.[0]).toMatchObject({ toolSource: "custom", execution: "sandbox", description: "Existing bash tool", input: { plugin: "value" } });
+		expect(f.prepare).toHaveBeenCalledOnce();
+	});
+	it("reviews other custom tools and sensitive uncontained reads when paused", async () => {
+		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
+		const f = fixture({ settings });
+		await f.call("read", { path: ".env" }, "secret");
+		await f.call("send_mail", { to: "someone@example.com", body: "Requested message" }, "mail");
+		expect(f.review).toHaveBeenCalledTimes(2);
+	});
+	it("requires fresh approval for each exact host command", async () => {
+		const f = fixture({ result: denied, hasUI: true });
+		vi.mocked(f.ctx.ui.confirm).mockResolvedValueOnce(true);
+		const input = { command: "# pi-auto: host Requested\nprintf allowed" };
+		expect(await f.call("bash", input)).toBeUndefined();
+		expect(f.ctx.ui.confirm).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('"cwd"'), expect.any(Object));
+		expect(input.command).toBe("printf allowed");
+		expect(await f.call("bash", { command: "# pi-auto: host Requested\nprintf changed" }, "next")).toMatchObject({ block: true });
+		expect(f.review).toHaveBeenCalledTimes(2);
+		expect(f.prepare).not.toHaveBeenCalled();
+	});
+	it("invalidates pending review on a branch change", async () => {
+		const f = fixture(); let finishReview!: (result: ReviewResult) => void;
+		f.review.mockImplementationOnce(() => new Promise((resolve) => { finishReview = resolve; }));
+		const pending = f.call("bash", { command: "# pi-auto: host Requested\necho host" });
+		await f.handlers.get("session_tree")!({}, f.ctx); finishReview(allowed);
+		expect(await pending).toMatchObject({ block: true, reason: expect.stringContaining("session or policy changed") });
+		expect(f.prepare).not.toHaveBeenCalled();
+	});
+	it("rejects changed input after asynchronous review", async () => {
+		const f = fixture(); const input = { command: "npm install", plugin: "original" };
+		f.review.mockImplementationOnce(async () => { input.plugin = "changed"; return allowed; });
+		expect(await f.call("bash", input)).toMatchObject({ block: true, reason: expect.stringContaining("input or policy changed") });
+		expect(f.prepare).not.toHaveBeenCalled();
+	});
+	it("hard-blocks protected configuration and malformed settings", async () => {
+		const f = fixture({ hasUI: true });
+		expect(await f.call("write", { path: ".agents/pi-auto-v2.json", content: '{}' })).toMatchObject({ block: true });
+		expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
+		const invalid = fixture({ errors: ["bad JSON"] });
+		expect(await invalid.call("read", { path: "README.md" })).toMatchObject({ block: true });
+	});
+	it("restores shared command arguments and releases preparation on shutdown", async () => {
+		const f = fixture(); const input = { command: "npm install confidential-package" };
+		await f.call("bash", input);
+		await f.handlers.get("session_shutdown")!({}, f.ctx);
+		expect(input.command).toBe("npm install confidential-package");
+		expect(f.cancel).toHaveBeenCalledOnce();
+		expect(f.reset).toHaveBeenCalledOnce();
+		expect(JSON.stringify(f.persist.mock.calls[0]?.[1])).not.toContain("confidential-package");
 	});
 });

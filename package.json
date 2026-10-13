@@ -1,46 +1,38 @@
 {
-	"name": "pi-auto",
-	"version": "0.1.0",
-	"description": "LLM-based tool-call auto-approval for the pi coding agent. Inspired by Codex's Auto-review/Guardian system: scores each tool call by risk and user authorization, then allows or denies it.",
-	"keywords": [
-		"pi-package"
-	],
-	"type": "module",
-	"private": true,
-	"scripts": {
-		"typecheck": "tsc --noEmit",
-		"ci": "npm run typecheck && npm run typecheck:test && npm test",
-		"test": "vitest run --exclude '**/live/**'",
-		"test:watch": "vitest --exclude '**/live/**'",
-		"test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live",
-		"test:live:5x": "PI_AUTO_LIVE_TESTS=1 PI_AUTO_ITERATIONS=5 vitest run tests/live",
-		"eval:live": "tsx scripts/run-live-eval.ts",
-		"eval:compare": "tsx scripts/compare-live-eval.ts",
-		"sync-codex": "tsx scripts/sync-codex.ts",
-		"typecheck:test": "tsc --project tsconfig.test.json --noEmit"
-	},
-	"pi": {
-		"extensions": [
-			"./extensions/pi-auto.ts"
-		]
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"typebox": "*"
-	},
-	"devDependencies": {
-		"@earendil-works/pi-ai": "^0.80.6",
-		"@earendil-works/pi-coding-agent": "^0.80.6",
-		"@earendil-works/pi-tui": "^0.80.6",
-		"tsx": "^4.22.4",
-		"typebox": "^1.2.2",
-		"typescript": "^6.0.3",
-		"vitest": "^4.1.8"
-	},
-	"dependencies": {
-		"@foxfirecodes/sandbox-runtime": "0.0.55-foxfirecodes.4",
-		"tree-sitter": "^0.25.1",
-		"tree-sitter-bash": "^0.25.1"
-	}
+  "name": "pi-auto",
+  "version": "0.2.0",
+  "description": "Minimal automatic tool review and sandboxed execution for the pi coding agent.",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --project tsconfig.test.json --noEmit",
+    "ci": "npm run typecheck && npm run typecheck:test && npm test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:sandbox": "PI_AUTO_SANDBOX_TESTS=1 vitest run tests/sandbox-native.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi-auto.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "typebox": "^1.2.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "@foxfirecodes/sandbox-runtime": "0.0.55-foxfirecodes.4"
+  }
 }
