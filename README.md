@@ -6,7 +6,7 @@ The current implementation is a fresh v2. Previous code, tests, documentation, t
 
 ## Run it
 
-Requires Node 22 or later, pi, and Linux or macOS.
+Requires Node 22.19 or later, pi, and Linux or macOS.
 
 ```bash
 npm ci

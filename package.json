@@ -26,8 +26,8 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.80.6",
-    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.2.0",
     "typebox": "^1.2.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

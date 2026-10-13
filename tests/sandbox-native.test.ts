@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createBashTool, createBashToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolCallEvent, type ToolDefinition, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { createBashTool, createBashToolDefinition, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolCallEvent, type ToolDefinition, type ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { prepareSandboxCommand, shutdownSandbox, type SandboxCommandOptions } from "../extensions/sandbox.ts";
 import type { SandboxSettings } from "../extensions/types.ts";
 
@@ -33,6 +33,7 @@ native("native Linux/macOS sandbox through existing bash", () => {
 			const result = await tool.execute("native", { command: prepared.command, timeout }, overrides.signal, (partial) => {
 				onUpdate?.(partial.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
 			});
+			isError = result.isError === true;
 			output = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 		} catch (error) {
 			isError = true;
@@ -146,15 +147,23 @@ native("native Linux/macOS sandbox through existing bash", () => {
 		const ctx = {
 			cwd, hasUI: false, model: { provider: "test", id: "test" },
 			modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-only" }) },
-			sessionManager: { getBranch: () => [{ type: "message", id: "native-request", message: { role: "user", content: [{ type: "text", text: "Write reviewed into delegated in this workspace. Continue with host access to write host-content into the host fixture when required." }] } }] },
+			sessionManager: {
+				getSessionId: () => "native-session", getSessionFile: () => undefined,
+				getBranch: () => [{ type: "message", id: "native-request", message: { role: "user", content: [{ type: "text", text: "Write reviewed into delegated in this workspace. Continue with host access to write host-content into the host fixture when required." }] } }],
+			},
 			getSystemPrompt: () => "", ui: { setStatus: vi.fn(), notify: vi.fn(), confirm: vi.fn(async () => false) },
 		} as unknown as ExtensionContext;
+		const toolContext: ExtensionToolContext = {
+			...ctx,
+			tools: [],
+			executeTool: async () => { throw new Error("Nested tools are unavailable in this direct-execution fixture."); },
+		};
 		async function dispatch(input: Record<string, unknown>, id: string) {
 			const event = { type: "tool_call", toolCallId: id, toolName: "bash", input } as ToolCallEvent;
 			expect(await handlers.get("tool_call")!(event, ctx)).toBeUndefined();
 			const updates: unknown[] = [];
-			const result = await existing.execute(id, input as unknown as Parameters<typeof base.execute>[1], undefined, (partial) => updates.push(partial), ctx);
-			const resultEvent = { type: "tool_result", toolCallId: id, toolName: "bash", input, content: result.content, details: result.details, isError: false } as ToolResultEvent;
+			const result = await existing.execute(id, input as unknown as Parameters<typeof base.execute>[1], undefined, (partial) => updates.push(partial), toolContext);
+			const resultEvent = { type: "tool_result", toolCallId: id, toolName: "bash", input, content: result.content, details: result.details, isError: result.isError === true } as ToolResultEvent;
 			const patch = await handlers.get("tool_result")!(resultEvent, ctx);
 			await handlers.get("tool_execution_end")?.({ toolCallId: id, toolName: "bash" }, ctx);
 			return { result, patch, updates };
