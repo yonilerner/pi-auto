@@ -65,7 +65,7 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 		if (ctx.hasUI) ctx.ui.notify(`pi-auto: ${message}`, type);
 	}
 	function status(ctx: ExtensionContext): void {
-		ctx.ui.setStatus("pi-auto", loaded?.errors.length ? "pi-auto: settings error" : settings.enabled ? "pi-auto: on · sandbox" : "pi-auto: sandbox pre-review off");
+		ctx.ui.setStatus("pi-auto", !settings.enabled ? "pi-auto: OFF · no review or sandbox" : loaded?.errors.length ? "pi-auto: settings error" : "pi-auto: on · sandbox");
 	}
 	function load(ctx: ExtensionContext): void {
 		authorizationEpoch++;
@@ -115,8 +115,6 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 		}
 		if (scope.kind === "skip") return undefined;
 		const action = scope.action;
-		// Only contained commands may skip pre-review; uncontained tools still need intent.
-		if (!settings.enabled && action.execution === "sandbox" && action.toolSource !== "custom") return undefined;
 		ctx.ui.setStatus("pi-auto", `pi-auto: reviewing ${event.toolName}`);
 		let result: ReviewResult;
 		try { result = await deps.reviewAction(action, ctx, settings, signal); }
@@ -149,6 +147,8 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 	}
 	pi.on("tool_call", async (event, ctx) => {
 		ensureLoaded(ctx);
+		// Off means no pi-auto policy checks, reviews, prompts, or input wrapping.
+		if (!settings.enabled) return undefined;
 		const epoch = authorizationEpoch;
 		const beforeReview = fingerprint(event.input, ctx.cwd);
 		const decision = await authorize(event, ctx);
@@ -206,27 +206,33 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 	pi.on("session_start", async (_event, ctx) => {
 		authorizationEpoch++;
 		await cancelPending(); load(ctx);
+		if (!settings.enabled) { notify(ctx, "OFF: no pi-auto review, path restrictions, or bash sandboxing.", "warning"); return; }
 		const availability = deps.checkSandboxAvailability();
 		if (!availability.available) notify(ctx, `sandbox unavailable; sandbox commands will fail closed: ${availability.errors.join("; ")}`, "error");
 		for (const warning of availability.warnings) notify(ctx, warning, "warning");
 	});
 	pi.on("session_tree", async (_event, ctx) => { authorizationEpoch++; if (ctx.isIdle?.()) await cancelPending(); status(ctx); });
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		ensureLoaded(ctx);
 		authorizationEpoch++; await cancelPending();
-		return { systemPrompt: `${event.systemPrompt}\n\n${EXECUTION_GUIDANCE}` };
+		const guidance = settings.enabled ? EXECUTION_GUIDANCE : "pi-auto is OFF. Tools are not reviewed, path-gated, or sandboxed by pi-auto. Bash runs with normal host privileges; no pi-auto host directive is needed.";
+		return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
 	});
 	pi.on("session_shutdown", async () => { authorizationEpoch++; await cancelPending(); await logQueue; await deps.shutdownSandbox(); });
 
 	pi.registerCommand("auto", {
-		description: "pi-auto on, off, status, reload, or log; off pauses sandbox pre-review only",
+		description: "pi-auto on, off, status, reload, or log; off fully disables pi-auto review and sandboxing",
 		async handler(args, ctx) {
 			ensureLoaded(ctx);
 			const command = args.trim() || "status";
 			if (command === "on" || command === "off") {
+				await ctx.waitForIdle();
 				authorizationEpoch++;
+				await cancelPending();
+				await deps.shutdownSandbox();
 				settings.enabled = command === "on";
 				status(ctx);
-				notify(ctx, `sandbox pre-review ${settings.enabled ? "enabled" : "paused"} for this session. Sandbox, hard restrictions, and reviews of host/custom/sensitive filesystem actions remain active.`);
+				notify(ctx, settings.enabled ? "ON: automatic review, path restrictions, and bash sandboxing enabled for this session." : "OFF: all pi-auto review, approval prompts, path restrictions, and bash sandboxing disabled for this session. Tools run with normal host privileges.", settings.enabled ? "info" : "warning");
 			} else if (command === "reload") {
 				await ctx.waitForIdle();
 				authorizationEpoch++; await cancelPending();
@@ -236,7 +242,7 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 				notify(ctx, decisions.length ? decisions.map((entry) => `${entry.at} ${entry.tool} ${entry.execution}: ${entry.outcome} (${entry.source}${entry.risk ? `, ${entry.risk}/${entry.authorization}` : ""})`).join("\n") : "no reviewed actions in this session");
 			} else if (command === "status") {
 				const availability = deps.checkSandboxAvailability();
-				notify(ctx, `sandbox pre-review ${settings.enabled ? "on" : "off"}; uncontained action review on; sandbox ${availability.available ? "available" : "unavailable"}; reviewer ${settings.reviewer.model || "active session model"}\nUser settings: ${loaded!.paths.user}\nProject settings: ${loaded!.paths.project}${availability.defaultWritePaths?.length ? `\nRuntime compatibility writes: ${availability.defaultWritePaths.join(", ")}` : ""}${loaded!.errors.length ? `\nErrors: ${loaded!.errors.join("; ")}` : ""}`);
+				notify(ctx, `pi-auto ${settings.enabled ? "on; review and path restrictions on; bash sandbox on" : "OFF; all review, path restrictions, and bash sandboxing off"}; sandbox runtime ${availability.available ? "available" : "unavailable"}; reviewer ${settings.reviewer.provider}/${settings.reviewer.model} (reasoning: ${settings.reviewer.reasoning})\nUser settings: ${loaded!.paths.user}\nProject settings: ${loaded!.paths.project}${availability.defaultWritePaths?.length ? `\nRuntime compatibility writes: ${availability.defaultWritePaths.join(", ")}` : ""}${loaded!.errors.length ? `\nErrors: ${loaded!.errors.join("; ")}` : ""}`);
 			} else notify(ctx, "usage: /auto on | off | status | reload | log", "warning");
 		},
 	});

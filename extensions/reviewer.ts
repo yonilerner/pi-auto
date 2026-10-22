@@ -48,9 +48,10 @@ export async function reviewAction(
 
 	async function assess(): Promise<ReviewResult> {
 		if (controller.signal.aborted) throw new Error("Reviewer cancelled.");
-		const configured = settings.reviewer.provider || settings.reviewer.model;
-		const model = configured ? ctx.modelRegistry.find(settings.reviewer.provider, settings.reviewer.model) : ctx.model;
-		if (!model) throw new Error(configured ? `Reviewer model ${settings.reviewer.provider}/${settings.reviewer.model} is unavailable.` : "No active model is available for review.");
+		const { provider, model: modelId } = settings.reviewer;
+		if (!provider.trim() || !modelId.trim()) throw new Error("Configure a dedicated reviewer provider and model; session-model fallback is disabled.");
+		const model = ctx.modelRegistry.find(provider, modelId);
+		if (!model) throw new Error(`Reviewer model ${provider}/${modelId} is unavailable.`);
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) throw new Error(`Reviewer authentication failed: ${auth.error}`);
 		if (!auth.apiKey) throw new Error(`No reviewer credentials for ${model.provider}/${model.id}.`);
@@ -71,6 +72,9 @@ export async function reviewAction(
 		// Large opaque actions cannot safely be approved after dropping their tail.
 		if (JSON.stringify(action).length > 64_000 || JSON.stringify(projectInstructions).length > 64_000) throw new Error("Action or project instructions exceed the review budget; split the action or shorten the instructions.");
 		const requestedReasoning = settings.reviewer.reasoning;
+		// The compat API has no explicit "off" option. Its OpenAI adapter uses
+		// the model's off mapping when omitted (Luna: API effort "none").
+		// A mocked-transport regression test pins the actual outgoing payload.
 		const reasoning = requestedReasoning !== "default" && requestedReasoning !== "off" && getSupportedThinkingLevels(model).includes(requestedReasoning) ? requestedReasoning : undefined;
 		const response = await completeSimple(model, {
 			systemPrompt: buildReviewerSystemPrompt(),

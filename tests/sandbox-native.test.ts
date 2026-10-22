@@ -146,7 +146,7 @@ native("native Linux/macOS sandbox through existing bash", () => {
 		expect(registration).not.toHaveBeenCalled();
 		const ctx = {
 			cwd, hasUI: false, model: { provider: "test", id: "test" },
-			modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-only" }) },
+			modelRegistry: { find: () => ({ provider: "openai", id: "gpt-6-luna", reasoning: false }), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-only" }) },
 			sessionManager: {
 				getSessionId: () => "native-session", getSessionFile: () => undefined,
 				getBranch: () => [{ type: "message", id: "native-request", message: { role: "user", content: [{ type: "text", text: "Write reviewed into delegated in this workspace. Continue with host access to write host-content into the host fixture when required." }] } }],

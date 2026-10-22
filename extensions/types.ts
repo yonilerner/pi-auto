@@ -14,12 +14,13 @@ export interface SandboxSettings {
 }
 
 export interface Settings {
+	/** false disables all pi-auto review, path gating, and bash sandboxing. */
 	enabled: boolean;
 	reviewer: {
-		/** Empty provider/model uses the active session model. */
+		/** Dedicated reviewer; never inherits or falls back to the active session model. */
 		provider: string;
 		model: string;
-		/** default/off omit the optional override and use provider defaults. */
+		/** default/off omit the compat override; Luna maps off to API effort none. */
 		reasoning: "default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 		timeoutMs: number;
 	};

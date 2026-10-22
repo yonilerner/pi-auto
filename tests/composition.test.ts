@@ -20,7 +20,7 @@ const globals = globalThis as unknown as Record<symbol, unknown>;
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); for (const key of keys.splice(0)) delete globals[key]; vi.mocked(completeSimple).mockReset(); });
 
 /** Real SDK loading and wrapping, with an independent existing bash extension. */
-async function fixture(options: { autoFirst?: boolean; modifier?: boolean; realHost?: boolean; actualReviewer?: boolean } = {}) {
+async function fixture(options: { autoFirst?: boolean; modifier?: boolean; realHost?: boolean; actualReviewer?: boolean; enabled?: boolean } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-auto-composition-")); roots.push(cwd);
 	const session = SessionManager.inMemory(cwd);
 	const requestId = session.appendMessage({ role: "user", content: "Create result.txt containing reviewed using host access; keep the existing bash integration.", timestamp: Date.now() });
@@ -48,7 +48,7 @@ async function fixture(options: { autoFirst?: boolean; modifier?: boolean; realH
 		});
 	};
 	const autoFactory = (pi: ExtensionAPI): void => registerPiAuto(pi, {
-		loadSettings: () => ({ settings: structuredClone(DEFAULT_SETTINGS), errors: [], paths: { user: join(cwd, "unused.json"), project: join(cwd, ".agents/pi-auto-v2.json") } }),
+		loadSettings: () => ({ settings: { ...structuredClone(DEFAULT_SETTINGS), enabled: options.enabled ?? true }, errors: [], paths: { user: join(cwd, "unused.json"), project: join(cwd, ".agents/pi-auto-v2.json") } }),
 		reviewAction: options.actualReviewer ? reviewAction : review,
 		prepareSandboxCommand: prepare,
 		persistDecision: async () => {},
@@ -67,7 +67,7 @@ async function fixture(options: { autoFirst?: boolean; modifier?: boolean; realH
 	const loaded = await discoverAndLoadExtensions(options.autoFirst ? [autoPath, existingPath] : [existingPath, autoPath], cwd, join(cwd, "agent"), createEventBus());
 	expect(loaded.errors).toEqual([]);
 	const runtime = loaded.runtime;
-	const modelRegistry = { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }) } as any;
+	const modelRegistry = { find: () => ({ provider: "openai", id: "gpt-6-luna", reasoning: false }), getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }) } as any;
 	const runner = new ExtensionRunner(loaded.extensions, runtime, cwd, session, modelRegistry);
 	const allTools = () => runner.getAllRegisteredTools().map(({ definition, sourceInfo }) => ({ name: definition.name, description: definition.description, parameters: definition.parameters, sourceInfo }));
 	runner.bindCore({ ...runtime, getAllTools: allTools, getActiveTools: () => ["bash"], refreshTools: () => {}, setActiveTools: () => {} } as any, {
@@ -88,6 +88,16 @@ async function fixture(options: { autoFirst?: boolean; modifier?: boolean; realH
 }
 
 describe("existing bash extension composition through the installed SDK", () => {
+	it("leaves an existing executor and earlier command modifiers untouched when off", async () => {
+		const f = await fixture({ enabled: false, realHost: true });
+		const command = "printf disabled > AGENTS.md";
+		const outcome = await f.call({ command, tag: "unrestricted" });
+		expect(outcome.blocked).toBeUndefined();
+		expect(f.review).not.toHaveBeenCalled();
+		expect(f.prepare).not.toHaveBeenCalled();
+		expect(f.received[0]).toEqual({ command: `printf modifier\\n;\n${command}`, tag: "unrestricted" });
+		expect(readFileSync(join(f.cwd, "AGENTS.md"), "utf8")).toBe("disabled");
+	});
 	it("wraps modified commands while preserving the existing executor, schema, extras, streaming, and results", async () => {
 		const f = await fixture();
 		const auto = f.loaded.extensions.find((extension) => extension.path === f.autoPath)!;

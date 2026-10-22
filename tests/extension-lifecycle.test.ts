@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerPiAuto, type RuntimeDependencies } from "../extensions/pi-auto.ts";
@@ -34,16 +34,17 @@ function fixture(options: { settings?: Settings; result?: ReviewResult; hasUI?: 
 	const prepare = vi.fn(async (input: SandboxCommandOptions) => ({ id: "wrapper", command: `wrapped(${input.command})`, sandboxCommand: input.command, finish, cancel }));
 	const persist = vi.fn(async (_cwd: string, _record: unknown) => {});
 	const reset = vi.fn(async () => {});
+	const availability = vi.fn(() => ({ available: true, errors: [] as string[], warnings: [] as string[] }));
 	registerPiAuto(pi, {
 		loadSettings: () => ({ settings: structuredClone(options.settings ?? DEFAULT_SETTINGS), errors: options.errors ?? [], paths: { user: "/tmp/pi-auto-v2.json", project: join(cwd, ".agents/pi-auto-v2.json") } }),
 		reviewAction: review, prepareSandboxCommand: prepare, persistDecision: persist, shutdownSandbox: reset,
-		checkSandboxAvailability: () => ({ available: true, errors: [], warnings: [] }),
+		checkSandboxAvailability: availability,
 	});
-	const ctx = { cwd, hasUI: options.hasUI ?? false, signal: undefined, isIdle: () => true, waitForIdle: vi.fn(async () => {}), ui: { setStatus: vi.fn(), notify: vi.fn(), confirm: vi.fn(async () => false) } } as unknown as ExtensionContext;
+	const ctx = { cwd, hasUI: options.hasUI ?? false, signal: undefined, isIdle: () => true, waitForIdle: vi.fn(async () => {}), ui: { setStatus: vi.fn(), notify: vi.fn(), confirm: vi.fn(async () => false) } } as unknown as ExtensionCommandContext;
 	const event = (toolName: string, input: Record<string, unknown>, toolCallId = "call") => ({ type: "tool_call", toolName, input, toolCallId }) as ToolCallEvent;
 	const call = (toolName: string, input: Record<string, unknown>, id = "call") => handlers.get("tool_call")!(event(toolName, input, id), ctx);
 	const result = (input: Record<string, unknown>, id = "call", content = [{ type: "text", text: "ok" }], isError = false) => handlers.get("tool_result")!({ type: "tool_result", toolName: "bash", toolCallId: id, input, content, details: { existing: true }, isError }, ctx);
-	return { ctx, pi, review, prepare, finish, cancel, persist, reset, handlers, call, result, command: (args: string) => command(args, ctx) };
+	return { ctx, pi, review, prepare, finish, cancel, persist, reset, availability, handlers, call, result, command: (args: string) => command(args, ctx) };
 }
 
 describe("existing-tool wrapper lifecycle", () => {
@@ -59,21 +60,20 @@ describe("existing-tool wrapper lifecycle", () => {
 		expect(f.review).toHaveBeenCalledOnce();
 		expect(f.prepare).not.toHaveBeenCalled();
 	});
-	it("keeps sandbox wrapping and directive host review active when builtin pre-review is paused", async () => {
+	it("fully bypasses review, host parsing, sandboxing, and argument changes when configured off", async () => {
 		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
-		const f = fixture({ settings });
-		const input = { command: "rm -rf scratch", timeout: 17, customArgument: "preserved" };
-		await f.call("bash", input);
-		expect(input).toEqual({ command: "wrapped(rm -rf scratch)", timeout: 17, customArgument: "preserved" });
+		const f = fixture({ settings, result: denied, hasUI: true });
+		for (const command of ["rm -rf scratch", "# pi-auto: host Need additional access\nprintf ok", "# pi-auto: host"]) {
+			const input = { command, timeout: 17, customArgument: "preserved" };
+			expect(await f.call("bash", input)).toBeUndefined();
+			expect(input).toEqual({ command, timeout: 17, customArgument: "preserved" });
+			expect(await f.result(input)).toBeUndefined();
+		}
 		expect(f.review).not.toHaveBeenCalled();
-		await f.result(input);
-		expect(input.command).toBe("rm -rf scratch");
-		const host = { command: "# pi-auto: host Need additional access\nprintf ok", timeout: 17 };
-		await f.call("bash", host, "host");
-		expect(f.review).toHaveBeenCalledOnce();
-		expect(f.review.mock.calls[0]?.[0]).toMatchObject({ execution: "host", input: { command: "printf ok", timeout: 17 } });
-		expect(host).toEqual({ command: "printf ok", timeout: 17 });
-		expect(f.prepare).toHaveBeenCalledOnce();
+		expect(f.prepare).not.toHaveBeenCalled();
+		expect(f.finish).not.toHaveBeenCalled();
+		expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
+		expect(f.persist).not.toHaveBeenCalled();
 	});
 	it("appends denial evidence while retaining existing output and never replaying", async () => {
 		const f = fixture();
@@ -99,19 +99,101 @@ describe("existing-tool wrapper lifecycle", () => {
 		expect(f.cancel).toHaveBeenCalledOnce();
 		expect(input.command).toBe("echo ok");
 	});
-	it("automatically reviews custom bash even while builtin pre-review is paused", async () => {
+	it("bypasses custom bash, MCP tools, sensitive reads, and protected writes when off", async () => {
 		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
-		const f = fixture({ settings, customBash: true });
-		await f.call("bash", { command: "echo ok", plugin: "value" });
-		expect(f.review.mock.calls[0]?.[0]).toMatchObject({ toolSource: "custom", execution: "sandbox", description: "Existing bash tool", input: { plugin: "value" } });
-		expect(f.prepare).toHaveBeenCalledOnce();
+		const f = fixture({ settings, customBash: true, result: denied, hasUI: true });
+		expect(await f.call("bash", { command: "echo ok", plugin: "value" })).toBeUndefined();
+		expect(await f.call("read", { path: ".env" }, "secret")).toBeUndefined();
+		expect(await f.call("send_mail", { to: "someone@example.com", body: "Requested message" }, "mail")).toBeUndefined();
+		expect(await f.call("memory_add", { target: "user", content: "Prefers concise answers" }, "memory")).toBeUndefined();
+		expect(await f.call("write", { path: ".agents/pi-auto-v2.json", content: "{}" }, "settings")).toBeUndefined();
+		expect(f.review).not.toHaveBeenCalled();
+		expect(f.prepare).not.toHaveBeenCalled();
+		expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
 	});
-	it("reviews other custom tools and sensitive uncontained reads when paused", async () => {
+	it("turns every gate off with /auto off and restores every gate with /auto on", async () => {
+		const f = fixture({ result: denied, hasUI: true });
+		await f.command("off");
+		expect(f.ctx.waitForIdle).toHaveBeenCalledOnce();
+		expect(f.reset).toHaveBeenCalledOnce();
+		expect(f.ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-auto", expect.stringContaining("OFF"));
+		expect(await f.call("bash", { command: "rm -rf scratch" })).toBeUndefined();
+		expect(await f.call("memory_add", { content: "A useful preference" })).toBeUndefined();
+		expect(await f.call("write", { path: "AGENTS.md", content: "changed" })).toBeUndefined();
+		expect(f.review).not.toHaveBeenCalled();
+		expect(f.prepare).not.toHaveBeenCalled();
+		expect(f.ctx.ui.confirm).not.toHaveBeenCalled();
+		await f.command("status");
+		expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("all review, path restrictions, and bash sandboxing off"), "info");
+		await f.command("on");
+		expect(await f.call("memory_add", { content: "Another preference" })).toMatchObject({ block: true });
+		expect(f.review).toHaveBeenCalledOnce();
+		expect(f.ctx.ui.confirm).toHaveBeenCalledOnce();
+		expect(await f.call("write", { path: "AGENTS.md", content: "changed" })).toMatchObject({ block: true });
+		const input = { command: "echo sandboxed" };
+		expect(await f.call("bash", input)).toBeUndefined();
+		expect(input.command).toBe("wrapped(echo sandboxed)");
+	});
+	it("allows fully turning off even with invalid configuration", async () => {
+		const f = fixture({ errors: ["bad JSON"] });
+		await f.command("off");
+		expect(await f.call("read", { path: "README.md" })).toBeUndefined();
+		expect(await f.call("bash", { command: "echo host" })).toBeUndefined();
+		expect(f.review).not.toHaveBeenCalled();
+		expect(f.prepare).not.toHaveBeenCalled();
+		await f.command("on");
+		expect(await f.call("read", { path: "README.md" })).toMatchObject({ block: true, reason: expect.stringContaining("configuration is invalid") });
+	});
+	it("updates model guidance and status to match the actual off/on state", async () => {
+		const f = fixture({ hasUI: true });
+		await f.command("off");
+		const disabled = await f.handlers.get("before_agent_start")!({ systemPrompt: "Original instructions" }, f.ctx);
+		expect(disabled.systemPrompt).toContain("pi-auto is OFF");
+		expect(disabled.systemPrompt).not.toContain("Bash is sandboxed by default");
+		await f.command("on");
+		const enabled = await f.handlers.get("before_agent_start")!({ systemPrompt: "Original instructions" }, f.ctx);
+		expect(enabled.systemPrompt).toContain("Bash is sandboxed by default");
+		await f.command("status");
+		expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("openai/gpt-6-luna (reasoning: off)"), "info");
+	});
+	it("releases pending wrappers before turning off and reloads the configured state", async () => {
+		const f = fixture(); const input = { command: "echo wrapped" };
+		await f.call("bash", input);
+		await f.command("off");
+		expect(input.command).toBe("echo wrapped");
+		expect(f.cancel).toHaveBeenCalledOnce();
+		expect(f.reset).toHaveBeenCalledOnce();
+		await f.command("reload");
+		await f.call("bash", input);
+		expect(input.command).toBe("wrapped(echo wrapped)");
+	});
+	it("does not check sandbox dependencies at startup when configured off", async () => {
 		const settings = structuredClone(DEFAULT_SETTINGS); settings.enabled = false;
-		const f = fixture({ settings });
-		await f.call("read", { path: ".env" }, "secret");
-		await f.call("send_mail", { to: "someone@example.com", body: "Requested message" }, "mail");
-		expect(f.review).toHaveBeenCalledTimes(2);
+		const f = fixture({ settings, hasUI: true });
+		f.availability.mockImplementation(() => { throw new Error("Sandbox is unavailable"); });
+		await f.handlers.get("session_start")!({}, f.ctx);
+		expect(f.availability).not.toHaveBeenCalled();
+		expect(f.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("OFF"), "warning");
+		expect(await f.call("bash", { command: "echo host" })).toBeUndefined();
+	});
+	it("keeps session toggles in memory rather than persisting them to the next session", async () => {
+		const f = fixture({ result: denied });
+		await f.command("off");
+		expect(await f.call("memory_add", { content: "Allowed while off" })).toBeUndefined();
+		await f.handlers.get("session_start")!({}, f.ctx);
+		expect(await f.call("memory_add", { content: "Reviewed again" })).toMatchObject({ block: true });
+	});
+	it.each(["review", "approval"])("invalidates stale %s when auto is turned off", async (stage) => {
+		const f = fixture({ result: denied, hasUI: true });
+		let release!: () => void;
+		if (stage === "review") f.review.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(allowed); }));
+		else vi.mocked(f.ctx.ui.confirm).mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(true); }));
+		const pending = f.call("memory_add", { content: "Pending memory" });
+		await Promise.resolve();
+		await f.command("off");
+		release();
+		expect(await pending).toMatchObject({ block: true, reason: expect.stringContaining("session or policy changed") });
+		expect(await f.call("memory_add", { content: "Fresh memory while off" })).toBeUndefined();
 	});
 	it("requires fresh approval for each exact host command", async () => {
 		const f = fixture({ result: denied, hasUI: true });

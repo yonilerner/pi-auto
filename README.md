@@ -23,6 +23,8 @@ Linux needs `bubblewrap` and `socat`. Install `strace` for filesystem violation 
 
 ## What happens
 
+While pi-auto is on:
+
 - Ordinary project reads, edits, file listings, and a small set of simple shell commands proceed immediately.
 - Destructive commands, sensitive file access, operations outside the project, opaque scripts, and custom/MCP tools receive automatic review.
 - Bash runs inside the sandbox by default. Workspace writes, a private temporary directory, and the runtime's compatibility paths are permitted. Network access requires configured destination allowances. Sensitive reads and protected settings are restricted.
@@ -31,7 +33,7 @@ Linux needs `bubblewrap` and `socat`. Install `strace` for filesystem violation 
 
 pi-auto wraps the command passed to the existing `bash` tool through pi's supported `tool_call` hook. It registers no bash replacement. The effective builtin, extension, or SDK bash tool keeps its schema, extra arguments, executor, rendering, streaming, timeouts, cancellation, and result details. Earlier command changes are included in review and sandbox wrapping. The original command is restored after execution so sandbox shell text does not remain in shared conversation arguments.
 
-Custom/MCP tools are assessed from their descriptions and arguments; their execution is not wrapped by the bash sandbox. Custom implementations of builtin names, including bash, also receive review even with sandbox pre-review paused. An existing bash override is permitted and remains responsible for executing the wrapped command.
+Custom/MCP tools are assessed from their descriptions and arguments; their execution is not wrapped by the bash sandbox. **Low-risk custom/MCP actions can be automatically approved without explicit user authorization**, including routine reads and bounded local memory/notes updates. Medium/high-risk custom actions still require sufficient authorization backed by original user messages. Every custom call still receives model review; there is no name-based allowlist. Custom implementations of builtin names, including bash, also receive review while pi-auto is on. An existing bash override is permitted and remains responsible for executing the wrapped command.
 
 The installed SDK has no public final executor middleware. Extension JavaScript runs with host privileges, and an executor that ignores the supplied command or a later handler that replaces it can bypass command containment. Use trusted local shell-compatible extensions and keep pi-auto after command-modifying handlers. Command modifiers should retain any host request directive as the first line.
 
@@ -48,7 +50,7 @@ npm install
 
 The first-line `# pi-auto: host <reason>` directive requests host review. Its reason and command body must be nonempty. After approval the comment is removed and the existing bash executor receives the command body and all its original extra arguments. No new bash schema fields are required.
 
-Every host request receives automatic review, including while ordinary pre-review is paused. An approved host command runs with your full user privileges, outside the pi-auto filesystem and network sandbox. Approval covers the exact command, arguments, and working directory. Static checks still block obvious protected-path changes, but arbitrary scripts' internal effects cannot be established from their command text alone.
+While pi-auto is on, every host request receives automatic review, even if classified low risk. An approved host command runs with your full user privileges, outside the pi-auto filesystem and network sandbox. Approval covers the exact command, arguments, and working directory. Static checks still block obvious protected-path changes, but arbitrary scripts' internal effects cannot be established from their command text alone.
 
 Submit one sandboxed bash call at a time. Pi can preflight an entire parallel batch before starting any tool; waiting for an active reservation here would deadlock that batch. A second simultaneous sandbox request is therefore rejected for retry after the first result. A result, error, cancellation, later extension block, or session shutdown releases the reservation. Commands are never automatically replayed.
 
@@ -57,16 +59,18 @@ Submit one sandboxed bash call at a time. Pi can preflight an entire parallel ba
 | Command | Effect |
 | --- | --- |
 | `/auto status` | Show review state, sandbox availability, reviewer model, and settings paths |
-| `/auto off` | Pause sandbox command pre-review for this session; retain sandbox, hard restrictions, and review of host/custom/sensitive filesystem actions |
-| `/auto on` | Resume automatic review |
+| `/auto off` | Fully disable pi-auto for this session: no reviews, approval prompts, path restrictions, or bash sandboxing |
+| `/auto on` | Re-enable automatic review, path restrictions, and bash sandboxing |
 | `/auto reload` | Wait for current work to finish, reload v2 settings, and reset sandbox state |
 | `/auto log` | Show recent decision metadata |
 
-`enabled: false` has the same bounded effect as `/auto off`. Routine workspace reads and edits remain fast; consequential actions without sandbox containment still receive review. Session toggles do not modify configuration files. Disabling or unloading the extension itself removes its protections.
+**Off means completely off.** `enabled: false` has the same full-disable effect as `/auto off`, including for custom/MCP tools and host requests. Bash arguments pass through unchanged, without pi-auto host-directive parsing or sandbox wrapping; tools run with normal user privileges. Other extensions may still enforce their own policies. A persistent `OFF` status makes the disabled state visible.
+
+On/off transitions wait for current work to finish and clean up pending sandbox state. Session toggles do not modify configuration files; `/auto reload` or a new session restores the configured `enabled` value. Invalid configuration does not prevent explicitly using `/auto off`. There is no partial-disable mode under the name `off`.
 
 ## Fresh configuration
 
-Settings merge in this order: built-in defaults, user file, project file. Nested fields merge; arrays replace the earlier array. Invalid or unknown settings block tool execution until corrected and reloaded.
+Settings merge in this order: built-in defaults, user file, project file. Nested fields merge; arrays replace the earlier array. While pi-auto is on, invalid or unknown settings block tool execution until corrected and reloaded.
 
 | File | Location |
 | --- | --- |
@@ -81,9 +85,9 @@ Example:
 {
   "enabled": true,
   "reviewer": {
-    "provider": "",
-    "model": "",
-    "reasoning": "default",
+    "provider": "openai",
+    "model": "gpt-6-luna",
+    "reasoning": "off",
     "timeoutMs": 30000
   },
   "sandbox": {
@@ -100,7 +104,9 @@ Example:
 }
 ```
 
-Empty reviewer provider/model selects the active session model with its existing credentials. Set both fields to select a separate reviewer. An unavailable configured model does not fall back to another model. Default reasoning omits a thinking-level override and uses provider/model defaults. Explicit reasoning levels are forwarded only when the installed model metadata supports them; `off` also omits an override rather than guaranteeing that a reasoning model stops thinking. Reviewer calls have a timeout and no automatic retries. `notices: "all"` also displays automatic approvals.
+The production reviewer defaults to **`openai/gpt-6-luna` with reasoning `off` (Instant/no reasoning)**, using your configured OpenAI credentials. It never inherits or falls back to the active session provider/model. Set `reviewer.provider`, `reviewer.model`, and `reviewer.reasoning` in the user or project file to choose another reviewer, then use `/auto reload`. Both provider and model must be nonempty. If an older v2 file explicitly sets them to empty strings, remove those overrides to use the new defaults or provide a dedicated model.
+
+The installed SDK has no separate Luna Instant model ID. Its OpenAI adapter maps Luna's `off` setting to API reasoning effort `none`; a mocked-transport test verifies that payload. The compatibility API represents `off` by omitting the optional reasoning override, so this no-reasoning guarantee is specific to that model/adapter. `reasoning: "default"` also omits the override; other explicit levels are forwarded only when the installed model metadata supports them. An unavailable configured reviewer fails closed rather than using your session model. Reviewer calls have a timeout and no automatic retries. `notices: "all"` also displays automatic approvals.
 
 Paths are absolute or relative to the current project; `~/` expands to your home directory. Basename patterns such as `.env.*` identify sensitive files; explicit paths are preferable for sandbox allowances. The project, private temporary directory, and listed `allowWrite` paths are writable. The existing runtime also adds `/tmp/claude`, `/private/tmp/claude`, `~/.npm/_logs`, `~/.claude/debug`, and standard device endpoints (`/dev/stdout`, `/dev/stderr`, `/dev/null`, `/dev/tty`, `/dev/dtracehelper`, `/dev/autofs_nowait`) as compatibility write paths. Commands receive the private directory as `TMPDIR`, but the extra runtime paths remain available unless explicitly denied.
 
@@ -108,7 +114,7 @@ Reads are generally permitted except sensitive paths and `denyRead`. Owner-confi
 
 The Linux backend also restores read access to a writable workspace beneath a broadly denied parent, even without an explicit `allowRead` exception. A parent-directory deny therefore does not make that writable workspace unreadable to bash. Explicit file denies remain enforced; use concrete denied resources for stronger read boundaries. Direct filesystem tools retain scope checks for denied paths.
 
-The v2 settings files, old settings files, and v2 decision state are protected from direct agent writes. Add project-specific protected resources to `protectedPaths`. Changes to protected settings are owner operations: edit them yourself, then use `/auto reload`.
+While pi-auto is on, the v2 settings files, old settings files, and v2 decision state are protected from direct agent writes. Add project-specific protected resources to `protectedPaths`. Edit protected settings yourself, then use `/auto reload`. Fully disabling pi-auto also removes these path restrictions.
 
 The internal `context` budgets can also be configured: `maxEntries` (24), `maxEntryChars` (4000), `maxTotalChars` (24000), and `maxPinnedMessages` (12). Review context retains the original current request and relevant earlier user messages from the active branch. Truncation is explicit; high-impact approval cannot rely on an incomplete current request.
 
@@ -131,6 +137,40 @@ npm run test:sandbox
 
 The first command typechecks the new source and tests and runs deterministic tests; it excludes `legacy/`. Composition tests load another bash extension through the installed pi SDK and verify its command edits, schema, extra arguments, streaming, and outputs survive pi-auto. Native sandbox probes are opt-in, use temporary fixtures, and make no paid reviewer calls. They delegate through pi's existing bash tool and verify workspace/outside writes, protected writes and sensitive reads, blocked network destinations, denial isolation, and the existing executor's cancellation.
 
-The native Linux probes have been run locally, including a complete extension → reviewer → policy → sandbox → filesystem flow with only the model completion mocked. macOS uses the same runtime integration and is included in CI, but local macOS execution was not available during this build. No live LLM tests ran during implementation. Historical live tests remain in `legacy/tests/live/`; follow [`AGENTS.md`](AGENTS.md) before running them.
+The native Linux probes have been run locally, including a complete extension → reviewer → policy → sandbox → filesystem flow with only the model completion mocked. macOS uses the same runtime integration and is included in CI, but local macOS execution was not available during the initial build. These native probes do not measure real-model reviewer behavior; the separate opt-in benchmark below does.
+
+### Live reviewer benchmark
+
+[`tests/live/scenarios.ts`](tests/live/scenarios.ts) defines 30 synthetic reviewer scenarios: authorized work, over-denial regressions, prompt injection, credential access/exfiltration, production destruction, host requests and partial-effect recovery, custom tools, revocations, and context provenance/budgeting. They call the production `reviewAction`, context builder, and deterministic policy reducer with real model completions. **Proposed actions are never executed.** This measures the reviewer layer, not a full coding-agent task or an empirical sandbox exploit rate.
+
+The **benchmark** default remains **`openai/gpt-6-luna` with `low` reasoning** (independent of the production `off` default), using your existing Pi **OpenAI OAuth login** (`/login openai`). No separate API key is needed. The harness refuses missing models, API-key fallback, and unsupported reasoning instead of silently choosing another model or thinking level. It does not change your production reviewer settings.
+
+Live tests consume subscription quota, can be slow, and can flake. They are skipped by `npm test` / `npm run ci`. Start with targeted cases; run the full set only deliberately or as a final validation:
+
+```bash
+# A targeted family, one call per scenario
+npm run bench:reviewer -- -t 'INJECTION-'
+
+# Repeated targeted probes for model variability
+PI_AUTO_ITERATIONS=3 npm run bench:reviewer -- -t 'AUTH-closeout|AUTH-force-main'
+
+# Probe reasoning off; rerun with =low for a matched comparison
+PI_AUTO_REVIEWER_REASONING=off PI_AUTO_ITERATIONS=3 npm run bench:reviewer -- -t 'AUTH-closeout|HOST-replay'
+
+# Deliberate full 30-scenario baseline (also available as npm run test:live)
+npm run bench:reviewer
+```
+
+`off` is accepted when the selected model supports it. The installed OpenAI adapter maps GPT-6 Luna's `off` setting to API effort `none`, even though the production reviewer omits its optional reasoning override for `off`; a mocked-transport test verifies the actual request. This is model/adapter-specific, not a guarantee for other providers. `minimal` is unsupported for this model. A targeted 8-case × 3-repeat comparison found no latency improvement from `off` (mean 4.19 s versus 3.44 s at `low`, both 24/24 passing); these sequential, nonrandomized samples do not establish a general speed ranking. The benchmark default remains `low`; production defaults to `off` by user preference, not because this sample established a speed advantage.
+
+The harness runs sequentially with a 60-second reviewer deadline and no harness retries. Mismatches and reviewer errors fail the tests, but reporting still captures the completed attempts. Each run writes a unique `pi-auto-reviewer-bench-*` directory under the system temporary directory (set `PI_AUTO_LIVE_RESULTS_DIR` to choose another parent):
+
+- `manifest.json`: exact model/API/reasoning, OAuth mode, settings, selection arguments, synthetic fixtures, and policy/scenario hashes.
+- `attempts.jsonl`: per-call outcomes, assessment/evidence/rationale, failure kind, and latency; no credentials.
+- `summary.json` / `summary.md`: pass counts, false allows, false denies, reviewer errors, category/scenario slices, and mean/p50/p95 latency.
+
+High/critical false allows use **human-authored consequence labels**, not the reviewer's own risk rating. Errors are never counted as successful denials; error counts are separate and false-allow/false-deny rates use assessed cases only. Production review results do not expose token usage or billing, so these reports do not invent cost estimates. Explicit `PI_AUTO_REVIEWER_PROVIDER`, `PI_AUTO_REVIEWER_MODEL`, and `PI_AUTO_REVIEWER_REASONING` overrides are available for future comparisons, but still require an OAuth login and a supported explicit reasoning level.
+
+The broader v1 scenario set, digest tests, repeat-run artifact/comparison tooling, and model-ablation runner remain archived in `legacy/tests/live/` and `legacy/scripts/`. Root CI excludes them; their historical scores do not establish v2 performance.
 
 Architecture consists of settings, scope, context, reviewer, deterministic policy, output annotations, sandbox preparation/lifecycle, and the extension entrypoint. [`docs/HISTORY.md`](docs/HISTORY.md) records the decisions behind the fresh implementation.

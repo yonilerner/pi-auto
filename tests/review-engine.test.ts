@@ -57,14 +57,26 @@ describe("code-owned policy reduction", () => {
 	it.each(["assistant-1", "tool-1", "another-branch-user"])("rejects authorization attributed to %s", (id) => {
 		expect(reduceAssessment({ ...assessment, evidence: [id] }, action, context).outcome).toBe("deny");
 	});
-	it("requires original user authorization even for low-risk host and custom tools", () => {
+	it.each(["mcp_read_ticket", "memory_add", "read"])("automatically allows low-risk custom tool %s without explicit user authorization", (toolName) => {
 		const low = { ...assessment, risk_level: "low" as const, user_authorization: "unknown" as const, evidence: [] };
+		const custom = { ...action, toolName, toolSource: "custom" as const, execution: "tool" as const };
+		expect(reduceAssessment(low, custom, context).outcome).toBe("allow");
+		expect(reduceAssessment(low, custom, { ...context, currentRequest: null }).outcome).toBe("allow");
+		expect(reduceAssessment({ ...low, evidence: ["tool-1"] }, custom, context).outcome).toBe("deny");
+		expect(reduceAssessment(low, custom, context, "Owner restriction").outcome).toBe("deny");
+	});
+	it("recognizes custom tools without metadata while retaining authorization for low-risk host requests", () => {
+		const low = { ...assessment, risk_level: "low" as const, user_authorization: "unknown" as const, evidence: [] };
+		expect(reduceAssessment(low, { ...action, toolName: "mcp_read_ticket", execution: "tool" }, context).outcome).toBe("allow");
+		expect(reduceAssessment(low, { ...action, toolSource: "custom" }, context).outcome).toBe("allow");
 		expect(reduceAssessment(low, { ...action, execution: "host" }, context).outcome).toBe("deny");
-		expect(reduceAssessment(low, { ...action, toolName: "mcp_read_ticket", execution: "tool" }, context).outcome).toBe("deny");
-		expect(reduceAssessment(low, action, context).outcome).toBe("allow");
-		expect(reduceAssessment({ ...low, evidence: ["tool-1"] }, action, context).outcome).toBe("deny");
-		expect(reduceAssessment(low, { ...action, toolName: "read", toolSource: "custom", execution: "tool" }, context).outcome).toBe("deny");
-		expect(reduceAssessment(low, { ...action, toolSource: "custom" }, context).outcome).toBe("deny");
+		expect(reduceAssessment(low, { ...action, toolSource: "custom", execution: "host" }, context).outcome).toBe("deny");
+	});
+	it.each(["medium", "high"] as const)("keeps original user authorization mandatory for %s-risk custom tools", (risk_level) => {
+		const custom = { ...action, toolName: "memory_add", toolSource: "custom" as const, execution: "tool" as const };
+		expect(reduceAssessment({ ...assessment, risk_level, user_authorization: "unknown", evidence: [] }, custom, context).outcome).toBe("deny");
+		expect(reduceAssessment({ ...assessment, risk_level, user_authorization: "low" }, custom, context).outcome).toBe("deny");
+		expect(reduceAssessment({ ...assessment, risk_level }, custom, context).outcome).toBe("allow");
 	});
 	it("never automatically allows critical actions or owner restrictions", () => {
 		expect(reduceAssessment({ ...assessment, risk_level: "critical", user_authorization: "high" }, action, context).outcome).toBe("deny");
@@ -177,10 +189,12 @@ describe("host directive without replacing the bash schema", () => {
 describe("reviewer API composition", () => {
 	let settings: Settings;
 	let ctx: ExtensionContext;
+	let reviewerModel: NonNullable<ExtensionContext["model"]>;
 	beforeEach(() => {
 		complete.mockReset();
 		settings = structuredClone(DEFAULT_SETTINGS);
-		ctx = { model: { provider: "test", id: "model" }, modelRegistry: { find: vi.fn(), getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test-key" }) }, sessionManager: { getBranch: vi.fn().mockReturnValue([message("user-1", "user", "Remove the generated build output.")]), getEntries: vi.fn(() => { throw new Error("Must not read other branches"); }) }, getSystemPrompt: () => '<project_instructions path="AGENTS.md">Never publish.</project_instructions>' } as unknown as ExtensionContext;
+		reviewerModel = { provider: "openai", id: "gpt-6-luna", reasoning: true, thinkingLevelMap: { off: "none", low: "low" } } as typeof reviewerModel;
+		ctx = { model: { provider: "expensive", id: "session-model" }, modelRegistry: { find: vi.fn(() => reviewerModel), getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test-key" }) }, sessionManager: { getBranch: vi.fn().mockReturnValue([message("user-1", "user", "Remove the generated build output.")]), getEntries: vi.fn(() => { throw new Error("Must not read other branches"); }) }, getSystemPrompt: () => '<project_instructions path="AGENTS.md">Never publish.</project_instructions>' } as unknown as ExtensionContext;
 	});
 	const response = (text: string) => ({ content: [{ type: "text", text }], stopReason: "stop", usage: {} }) as never;
 
@@ -192,19 +206,43 @@ describe("reviewer API composition", () => {
 		expect(sent.context.currentRequest).toMatchObject({ id: "user-1", role: "user" });
 		expect(sent.projectInstructions).toEqual([{ path: "AGENTS.md", text: "Never publish." }]);
 	});
-	it("omits the reasoning override by default and for incompatible models", async () => {
+	it.each([["low", "allow"], ["medium", "deny"]] as const)("handles a %s-risk memory call with no explicit user authorization as %s", async (risk_level, outcome) => {
+		complete.mockResolvedValue(response(JSON.stringify({ risk_level, user_authorization: "unknown", evidence: [], rationale: "A bounded local memory update." })));
+		const memory: ReviewableAction = { ...action, toolName: "memory_add", toolSource: "custom", execution: "tool", description: "Store a durable local preference", input: { target: "user", content: "Prefers concise answers" } };
+		expect(await reviewAction(memory, ctx, settings)).toMatchObject({ kind: "assessed", decision: { outcome } });
+		expect(complete.mock.calls[0]?.[1].systemPrompt).toContain("bounded local memory/notes updates");
+	});
+	it("uses the dedicated Luna reviewer in off mode, never the session model", async () => {
+		complete.mockResolvedValue(response(JSON.stringify(assessment)));
+		await reviewAction(action, ctx, settings);
+		expect(ctx.modelRegistry.find).toHaveBeenCalledWith("openai", "gpt-6-luna");
+		expect(ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(reviewerModel);
+		expect(complete.mock.calls[0]?.[0]).toBe(reviewerModel);
+		expect(settings.reviewer.reasoning).toBe("off");
+		expect(complete.mock.calls[0]?.[2]).not.toHaveProperty("reasoning");
+		ctx.model = undefined;
+		expect(await reviewAction(action, ctx, settings)).toMatchObject({ kind: "assessed" });
+	});
+	it("uses the owner's configured reviewer provider, model, and reasoning", async () => {
+		complete.mockResolvedValue(response(JSON.stringify(assessment)));
+		settings.reviewer = { ...settings.reviewer, provider: "other", model: "reviewer", reasoning: "low" };
+		await reviewAction(action, ctx, settings);
+		expect(ctx.modelRegistry.find).toHaveBeenCalledWith("other", "reviewer");
+		expect(complete.mock.calls[0]?.[2]).toHaveProperty("reasoning", "low");
+	});
+	it("omits the reasoning override only for default or incompatible models", async () => {
 		complete.mockResolvedValue(response(JSON.stringify(assessment)));
 		settings.reviewer.reasoning = "default";
 		await reviewAction(action, ctx, settings);
 		expect(complete.mock.calls.at(-1)?.[2]).not.toHaveProperty("reasoning");
 		settings.reviewer.reasoning = "low";
-		ctx.model = { ...ctx.model!, reasoning: false };
+		reviewerModel.reasoning = false;
 		await reviewAction(action, ctx, settings);
 		expect(complete.mock.calls.at(-1)?.[2]).not.toHaveProperty("reasoning");
-		ctx.model = { ...ctx.model!, reasoning: true, thinkingLevelMap: { low: null } };
+		reviewerModel.reasoning = true; reviewerModel.thinkingLevelMap = { low: null };
 		await reviewAction(action, ctx, settings);
 		expect(complete.mock.calls.at(-1)?.[2]).not.toHaveProperty("reasoning");
-		ctx.model = { ...ctx.model!, thinkingLevelMap: { low: "low" } };
+		reviewerModel.thinkingLevelMap = { low: "low" };
 		await reviewAction(action, ctx, settings);
 		expect(complete.mock.calls.at(-1)?.[2]).toHaveProperty("reasoning", "low");
 	});
@@ -221,7 +259,14 @@ describe("reviewer API composition", () => {
 	});
 	it("fails closed on unavailable configured models without active-model fallback", async () => {
 		settings.reviewer.provider = "missing"; settings.reviewer.model = "missing";
+		vi.mocked(ctx.modelRegistry.find).mockReturnValue(undefined);
 		expect(await reviewAction(action, ctx, settings)).toMatchObject({ kind: "failed", reason: expect.stringContaining("unavailable") });
+		expect(complete).not.toHaveBeenCalled();
+	});
+	it("refuses empty reviewer settings rather than inheriting the active session model", async () => {
+		settings.reviewer.provider = ""; settings.reviewer.model = "";
+		expect(await reviewAction(action, ctx, settings)).toMatchObject({ kind: "failed", reason: expect.stringContaining("session-model fallback is disabled") });
+		expect(ctx.modelRegistry.find).not.toHaveBeenCalled();
 		expect(complete).not.toHaveBeenCalled();
 	});
 	it("fails closed on API errors and refuses tool-result evidence from the model", async () => {

@@ -15,6 +15,12 @@ function fixture() {
 }
 
 describe("fresh v2 settings", () => {
+	it("defaults to a dedicated configurable Luna Instant reviewer", () => {
+		const { cwd, paths } = fixture();
+		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000 });
+		writeFileSync(paths.user, JSON.stringify({ reviewer: { provider: "another-provider", model: "fast-reviewer", reasoning: "low" } }));
+		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "another-provider", model: "fast-reviewer", reasoning: "low", timeoutMs: 30_000 });
+	});
 	it("reads new user and project files without touching legacy settings", () => {
 		const { cwd, app, paths } = fixture();
 		mkdirSync(join(app, "extensions"));
@@ -38,7 +44,9 @@ describe("fresh v2 settings", () => {
 		expect(loaded.settings.sandbox.allowedDomains).toEqual([]);
 	});
 	it("rejects unknown or inconsistent reviewer fields", () => {
-		expect(() => applySettings(DEFAULT_SETTINGS, { reviewer: { provider: "missing" } })).toThrow("configured together");
+		for (const reviewer of [{ provider: "" }, { model: "" }, { provider: "", model: "" }, { provider: " " }]) {
+			expect(() => applySettings(DEFAULT_SETTINGS, { reviewer })).toThrow("must both be nonempty");
+		}
 		expect(() => applySettings(DEFAULT_SETTINGS, { sandbox: { constructor: [] } })).toThrow("unknown sandbox setting");
 		expect(() => applySettings(DEFAULT_SETTINGS, { reviewer: { timeoutMs: 0 } })).toThrow("integer");
 		expect(() => applySettings(DEFAULT_SETTINGS, { sandboxMode: "off" })).toThrow("unknown setting");

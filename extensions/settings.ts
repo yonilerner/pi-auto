@@ -5,7 +5,7 @@ import type { Settings } from "./types.ts";
 
 export const DEFAULT_SETTINGS: Settings = {
 	enabled: true,
-	reviewer: { provider: "", model: "", reasoning: "default", timeoutMs: 30_000 },
+	reviewer: { provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000 },
 	context: { maxEntries: 24, maxEntryChars: 4_000, maxTotalChars: 24_000, maxPinnedMessages: 12 },
 	sensitivePaths: [".env", ".env.*", "~/.ssh", "~/.aws", "~/.config", "~/.pi/agent/auth.json"],
 	protectedPaths: [".git/hooks", ".git/config", "AGENTS.md"],
@@ -68,7 +68,7 @@ export function applySettings(base: Settings, input: unknown): Settings {
 			}
 		}
 	}
-	if (Boolean(result.reviewer.provider) !== Boolean(result.reviewer.model)) throw new Error("reviewer.provider and reviewer.model must be configured together");
+	if (!result.reviewer.provider.trim() || !result.reviewer.model.trim()) throw new Error("reviewer.provider and reviewer.model must both be nonempty; session-model fallback is disabled");
 	return result;
 }
 

@@ -13,7 +13,9 @@
     "ci": "npm run typecheck && npm run typecheck:test && npm test",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:sandbox": "PI_AUTO_SANDBOX_TESTS=1 vitest run tests/sandbox-native.test.ts"
+    "test:sandbox": "PI_AUTO_SANDBOX_TESTS=1 vitest run tests/sandbox-native.test.ts",
+    "test:live": "PI_AUTO_LIVE_TESTS=1 vitest run tests/live/reviewer-scenarios.test.ts",
+    "bench:reviewer": "npm run test:live --"
   },
   "pi": {
     "extensions": [
