@@ -23,6 +23,10 @@ export interface Settings {
 		/** default/off omit the compat override; Luna maps off to API effort none. */
 		reasoning: "default" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 		timeoutMs: number;
+		/** auto constrains supported OpenAI Responses models; off uses prompt-only JSON. */
+		structuredOutput: "auto" | "off";
+		/** Persist content-free reviewer diagnostics; session /auto debug toggles this too. */
+		debug: boolean;
 	};
 	context: {
 		maxEntries: number;
@@ -74,9 +78,42 @@ export interface PolicyDecision {
 	reason: string;
 }
 
+export type AssessmentField = "risk_level" | "user_authorization" | "evidence" | "rationale";
+export type ReviewValidationCode = "empty_response" | "invalid_json" | "not_object" | "missing_fields" | "unexpected_fields" | "invalid_field" | "output_truncated";
+export interface AssessmentValidationIssue {
+	code: ReviewValidationCode;
+	field?: AssessmentField;
+	rule?: "type" | "enum" | "max_items" | "item_type" | "item_empty" | "item_length" | "empty" | "max_length";
+	missing?: AssessmentField[];
+	extraFieldCount?: number;
+}
+export type ReviewFailureCode = ReviewValidationCode | "model_unavailable" | "auth_error" | "request_too_large" | "provider_error" | "provider_refusal" | "timeout" | "cancelled";
+export interface ReviewAttemptDiagnostic {
+	attempt: number;
+	latencyMs: number;
+	maxTokens: number;
+	stopReason?: "stop" | "length" | "toolUse" | "error" | "aborted" | "unknown";
+	contentTypes?: ("text" | "thinking" | "toolCall" | "other")[];
+	textChars?: number;
+	responseHash?: string;
+	httpStatus?: number;
+	error?: ReviewFailureCode;
+	validation?: AssessmentValidationIssue;
+}
+/** Only host-generated metadata: never prompts, arguments, response text, rationale, or provider errors. */
+export interface ReviewDiagnostics {
+	id: string;
+	provider: string;
+	model: string;
+	api?: string;
+	reasoning: Settings["reviewer"]["reasoning"];
+	format: "json_schema" | "prompt";
+	attempts: ReviewAttemptDiagnostic[];
+	failure?: ReviewFailureCode;
+}
 export type ReviewResult =
-	| { kind: "assessed"; assessment: ReviewerAssessment; decision: PolicyDecision; latencyMs: number }
-	| { kind: "failed"; reason: string; latencyMs: number };
+	| { kind: "assessed"; assessment: ReviewerAssessment; decision: PolicyDecision; latencyMs: number; diagnostics?: ReviewDiagnostics }
+	| { kind: "failed"; reason: string; latencyMs: number; failureCode?: ReviewFailureCode; diagnostics?: ReviewDiagnostics };
 
 export interface ContextEntry {
 	id: string;

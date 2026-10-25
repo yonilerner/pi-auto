@@ -5,7 +5,7 @@ import type { Settings } from "./types.ts";
 
 export const DEFAULT_SETTINGS: Settings = {
 	enabled: true,
-	reviewer: { provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000 },
+	reviewer: { provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000, structuredOutput: "auto", debug: false },
 	context: { maxEntries: 24, maxEntryChars: 4_000, maxTotalChars: 24_000, maxPinnedMessages: 12 },
 	sensitivePaths: [".env", ".env.*", "~/.ssh", "~/.aws", "~/.config", "~/.pi/agent/auth.json"],
 	protectedPaths: [".git/hooks", ".git/config", "AGENTS.md"],
@@ -57,7 +57,13 @@ export function applySettings(base: Settings, input: unknown): Settings {
 					if (!["default", "off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(String(option))) throw new Error("unsupported reviewer reasoning");
 					result.reviewer.reasoning = option as Settings["reviewer"]["reasoning"];
 				} else if (name === "timeoutMs") result.reviewer.timeoutMs = positiveInteger(option, "reviewer.timeoutMs", 300_000);
-				else throw new Error(`unknown reviewer setting: ${name}`);
+				else if (name === "structuredOutput") {
+					if (option !== "auto" && option !== "off") throw new Error("reviewer.structuredOutput must be auto or off");
+					result.reviewer.structuredOutput = option;
+				} else if (name === "debug") {
+					if (typeof option !== "boolean") throw new Error("reviewer.debug must be boolean");
+					result.reviewer.debug = option;
+				} else throw new Error(`unknown reviewer setting: ${name}`);
 			}
 		} else if (key === "context") {
 			if (!isRecord(value)) throw new Error("context must be an object");

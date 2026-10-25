@@ -58,13 +58,17 @@ Submit one sandboxed bash call at a time. Pi can preflight an entire parallel ba
 
 | Command | Effect |
 | --- | --- |
-| `/auto status` | Show review state, sandbox availability, reviewer model, and settings paths |
+| `/auto` / `/auto status` | One-line state, sandbox availability, reviewer model, and reasoning |
 | `/auto off` | Fully disable pi-auto for this session: no reviews, approval prompts, path restrictions, or bash sandboxing |
 | `/auto on` | Re-enable automatic review, path restrictions, and bash sandboxing |
 | `/auto reload` | Wait for current work to finish, reload v2 settings, and reset sandbox state |
-| `/auto log` | Show recent decision metadata |
+| `/auto log` / `/auto log all` | Compact decision rows: latest 10, or all retained session records (up to 50) |
+| `/auto debug` | Persistence state and five one-line reviewer summaries |
+| `/auto debug last` / `/auto debug <id>` | Full content-free metadata for one review; short IDs accepted |
+| `/auto debug paths` | Settings/log paths, sandbox prerequisites, compatibility write paths, and configuration errors |
+| `/auto debug on` / `/auto debug off` | Enable/disable reviewer diagnostic persistence for this session; does not change review or sandboxing |
 
-**Off means completely off.** `enabled: false` has the same full-disable effect as `/auto off`, including for custom/MCP tools and host requests. Bash arguments pass through unchanged, without pi-auto host-directive parsing or sandbox wrapping; tools run with normal user privileges. Other extensions may still enforce their own policies. A persistent `OFF` status makes the disabled state visible.
+**Off means completely off.** `enabled: false` has the same full-disable effect as `/auto off`, including for custom/MCP tools and host requests. Bash arguments pass through unchanged, without pi-auto host-directive parsing or sandbox wrapping; tools run with normal user privileges. Other extensions may still enforce their own policies. The footer shows `auto` when enabled, `auto off` when disabled, `auto !` for a configuration error, and the tool name during review. Routine confirmations stay one line; paths and diagnostic JSON appear only on explicit debug requests. Approval prompts retain the exact arguments, working directory, and host-access warning.
 
 On/off transitions wait for current work to finish and clean up pending sandbox state. Session toggles do not modify configuration files; `/auto reload` or a new session restores the configured `enabled` value. Invalid configuration does not prevent explicitly using `/auto off`. There is no partial-disable mode under the name `off`.
 
@@ -88,7 +92,9 @@ Example:
     "provider": "openai",
     "model": "gpt-6-luna",
     "reasoning": "off",
-    "timeoutMs": 30000
+    "timeoutMs": 30000,
+    "structuredOutput": "auto",
+    "debug": false
   },
   "sandbox": {
     "allowedDomains": ["registry.npmjs.org"],
@@ -106,7 +112,9 @@ Example:
 
 The production reviewer defaults to **`openai/gpt-6-luna` with reasoning `off` (Instant/no reasoning)**, using your configured OpenAI credentials. It never inherits or falls back to the active session provider/model. Set `reviewer.provider`, `reviewer.model`, and `reviewer.reasoning` in the user or project file to choose another reviewer, then use `/auto reload`. Both provider and model must be nonempty. If an older v2 file explicitly sets them to empty strings, remove those overrides to use the new defaults or provide a dedicated model.
 
-The installed SDK has no separate Luna Instant model ID. Its OpenAI adapter maps Luna's `off` setting to API reasoning effort `none`; a mocked-transport test verifies that payload. The compatibility API represents `off` by omitting the optional reasoning override, so this no-reasoning guarantee is specific to that model/adapter. `reasoning: "default"` also omits the override; other explicit levels are forwarded only when the installed model metadata supports them. An unavailable configured reviewer fails closed rather than using your session model. Reviewer calls have a timeout and no automatic retries. `notices: "all"` also displays automatic approvals.
+The installed SDK has no separate Luna Instant model ID. Its OpenAI adapter maps Luna's `off` setting to API reasoning effort `none`; a mocked-transport test verifies that payload. The compatibility API represents `off` by omitting the optional reasoning override, so this no-reasoning guarantee is specific to that model/adapter. `reasoning: "default"` also omits the override; other explicit levels are forwarded only when the installed model metadata supports them. An unavailable configured reviewer fails closed rather than using your session model. Reviewer calls share one timeout across credential lookup and at most two completion attempts. A malformed, empty, or token-truncated assessment gets **one formatting-only retry**, with no raw prior response fed back to the model. A token-limit retry has a 4096-token cap instead of 2048. Valid policy denials, provider errors/refusals, authentication errors, cancellation, and timeouts are not retried. SDK transport retries are disabled. The proposed tool action is never executed or replayed by this recovery path. `notices: "all"` also displays automatic approvals.
+
+`reviewer.structuredOutput: "auto"` requests a strict JSON schema for the official OpenAI provider's Responses API, including the default Luna reviewer. Other providers/APIs retain prompt-only JSON plus the same local validation and bounded formatting recovery. Set `"structuredOutput": "off"` for a customized endpoint that rejects schema constraints; schema rejection is a provider error, not a reason to silently switch models or weaken validation. Structured output constrains format, not the correctness of risk/authorization judgments.
 
 Paths are absolute or relative to the current project; `~/` expands to your home directory. Basename patterns such as `.env.*` identify sensitive files; explicit paths are preferable for sandbox allowances. The project, private temporary directory, and listed `allowWrite` paths are writable. The existing runtime also adds `/tmp/claude`, `/private/tmp/claude`, `~/.npm/_logs`, `~/.claude/debug`, and standard device endpoints (`/dev/stdout`, `/dev/stderr`, `/dev/null`, `/dev/tty`, `/dev/dtracehelper`, `/dev/autofs_nowait`) as compatibility write paths. Commands receive the private directory as `TMPDIR`, but the extra runtime paths remain available unless explicitly denied.
 
@@ -120,7 +128,32 @@ The internal `context` budgets can also be configured: `maxEntries` (24), `maxEn
 
 ## Decisions and limits
 
-Decision metadata persists in `~/.pi/agent/pi-auto-v2/decisions.jsonl` (or the configured agent directory), capped at 200 records. Records contain timestamps, tool names, execution mode, action fingerprints, outcomes, user evidence IDs, risk, authorization, and latency. They contain no commands, arguments, transcript, or rationale. `/auto log` retains the latest 50 records in memory; a persistence failure produces one warning.
+Decision metadata persists in `~/.pi/agent/pi-auto-v2/decisions.jsonl` (or the configured agent directory), capped at 200 records. Records contain timestamps, tool names, execution mode, action fingerprints, outcomes, user evidence IDs, risk, authorization, latency, and available review IDs/attempt counts/failure codes. They contain no commands, arguments, transcript, or rationale. The runtime retains the latest 50 records in memory; `/auto log` shows 10 and `/auto log all` shows all retained records. A persistence failure produces one warning.
+
+### Debugging reviewer failures
+
+Failure messages distinguish unusable assessments from missing models, authentication failures, provider errors/refusals, timeouts, and cancellation. A failure includes a review ID you can correlate with `/auto log` and `/auto debug`. Validation diagnostics identify empty text, malformed JSON, missing required fields, extra-field counts, the field/rule that failed validation, or token-limit truncation.
+
+To investigate a recurring issue after loading the updated extension:
+
+```text
+/auto debug on
+```
+
+Continue normally until the issue occurs, then inspect:
+
+```text
+/auto debug
+/auto log
+```
+
+The runtime retains the latest 20 content-free traces in memory and summarizes the latest five with `/auto debug`, even if persistence is off. Use `/auto debug last` or `/auto debug <id>` for full metadata; the short `#id` shown in summaries and `/auto log` is accepted. Ambiguous prefixes require more characters. `/auto debug paths` shows the persistence path, settings paths, and sandbox/configuration details.
+
+With debug on, it also writes `~/.pi/agent/pi-auto-v2/reviewer-debug.jsonl` (respecting agent-directory overrides), capped at 200 records with owner-only directory/file permissions. Traces contain model/API/reasoning, schema-versus-prompt mode, per-attempt latency and token cap, stop reason, content-block types, text length/hash, HTTP status when available, and validation/failure codes.
+
+**No prompts, action arguments, commands, transcript, raw model responses, thinking text, rationale, headers, credentials, or raw provider error messages are written to this debug log.** Unknown response-field names and values are not logged either. These diagnostics cannot reconstruct a discarded response or recover failures from before this instrumentation existed.
+
+Use `/auto debug off` to stop persistence; existing records are not deleted. Debug toggles are session-only, do not disable review, and reset to the configured value on reload/new session. Set `reviewer.debug: true` in the owner-managed settings file to keep persistence enabled across reloads. Fully disabling pi-auto with `/auto off` still bypasses review altogether.
 
 This extension provides automatic intent review and a bash sandbox. It does not make edits transactional or provide filesystem rollback. Host commands, custom tools, pi extensions, and external services can have effects that the sandbox cannot constrain. Install only trusted extensions, and use checkpoints for valuable existing work. The decision log is a bounded diagnostic record, not a tamper-resistant audit system.
 
@@ -163,7 +196,7 @@ npm run bench:reviewer
 
 `off` is accepted when the selected model supports it. The installed OpenAI adapter maps GPT-6 Luna's `off` setting to API effort `none`, even though the production reviewer omits its optional reasoning override for `off`; a mocked-transport test verifies the actual request. This is model/adapter-specific, not a guarantee for other providers. `minimal` is unsupported for this model. A targeted 8-case × 3-repeat comparison found no latency improvement from `off` (mean 4.19 s versus 3.44 s at `low`, both 24/24 passing); these sequential, nonrandomized samples do not establish a general speed ranking. The benchmark default remains `low`; production defaults to `off` by user preference, not because this sample established a speed advantage.
 
-The harness runs sequentially with a 60-second reviewer deadline and no harness retries. Mismatches and reviewer errors fail the tests, but reporting still captures the completed attempts. Each run writes a unique `pi-auto-reviewer-bench-*` directory under the system temporary directory (set `PI_AUTO_LIVE_RESULTS_DIR` to choose another parent):
+The harness runs sequentially with a 60-second shared reviewer deadline and no retries added by the harness. The production reviewer's single formatting-only repair remains enabled; this never executes a proposed action. Mismatches and reviewer errors fail the tests, but reporting still captures the completed attempts. Each run writes a unique `pi-auto-reviewer-bench-*` directory under the system temporary directory (set `PI_AUTO_LIVE_RESULTS_DIR` to choose another parent):
 
 - `manifest.json`: exact model/API/reasoning, OAuth mode, settings, selection arguments, synthetic fixtures, and policy/scenario hashes.
 - `attempts.jsonl`: per-call outcomes, assessment/evidence/rationale, failure kind, and latency; no credentials.

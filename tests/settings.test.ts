@@ -17,9 +17,9 @@ function fixture() {
 describe("fresh v2 settings", () => {
 	it("defaults to a dedicated configurable Luna Instant reviewer", () => {
 		const { cwd, paths } = fixture();
-		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000 });
+		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "openai", model: "gpt-6-luna", reasoning: "off", timeoutMs: 30_000, structuredOutput: "auto", debug: false });
 		writeFileSync(paths.user, JSON.stringify({ reviewer: { provider: "another-provider", model: "fast-reviewer", reasoning: "low" } }));
-		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "another-provider", model: "fast-reviewer", reasoning: "low", timeoutMs: 30_000 });
+		expect(loadSettings(cwd).settings.reviewer).toEqual({ provider: "another-provider", model: "fast-reviewer", reasoning: "low", timeoutMs: 30_000, structuredOutput: "auto", debug: false });
 	});
 	it("reads new user and project files without touching legacy settings", () => {
 		const { cwd, app, paths } = fixture();
@@ -35,6 +35,12 @@ describe("fresh v2 settings", () => {
 		expect(loaded.settings.notices).toBe("all");
 		expect(loaded.settings.sandbox.allowedDomains).toEqual(["example.com"]);
 		expect(readFileSync(old, "utf8")).toBe('{"enabled":false}');
+	});
+	it("merges reviewer debug/structured-output settings and rejects invalid modes", () => {
+		const configured = applySettings(DEFAULT_SETTINGS, { reviewer: { debug: true, structuredOutput: "off" } });
+		expect(configured.reviewer).toMatchObject({ provider: "openai", model: "gpt-6-luna", reasoning: "off", debug: true, structuredOutput: "off" });
+		expect(() => applySettings(DEFAULT_SETTINGS, { reviewer: { debug: "raw" } })).toThrow("debug must be boolean");
+		expect(() => applySettings(DEFAULT_SETTINGS, { reviewer: { structuredOutput: true } })).toThrow("must be auto or off");
 	});
 	it("reports invalid settings instead of quietly widening permissions", () => {
 		const { cwd, paths } = fixture();

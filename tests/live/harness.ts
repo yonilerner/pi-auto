@@ -41,7 +41,7 @@ export function assertBenchmarkModel(registry: Pick<ModelRegistry, "find" | "isU
 
 export function benchmarkSettings(config: BenchmarkConfig): Settings {
 	const settings = structuredClone(DEFAULT_SETTINGS);
-	settings.reviewer = { provider: config.provider, model: config.model, reasoning: config.reasoning, timeoutMs: 60_000 };
+	settings.reviewer = { ...settings.reviewer, provider: config.provider, model: config.model, reasoning: config.reasoning, timeoutMs: 60_000, debug: false };
 	return settings;
 }
 

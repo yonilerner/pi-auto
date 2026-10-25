@@ -3,11 +3,13 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { reviewAction } from "./reviewer.ts";
+import { formatReviewDebug, persistReviewDebug, reviewFailureLabel, reviewerDebugPath, type ReviewDebugRecord } from "./diagnostics.ts";
 import { parseBashDirective, protectedWritePaths, decideScope } from "./scope.ts";
 import { prepareSandboxCommand, shutdownSandbox, checkSandboxAvailability, type PreparedSandboxCommand } from "./sandbox.ts";
 import { appendExecutionNotice } from "./execution.ts";
+import { compact, failureSummary, formatApproval, formatDebugSummary, formatDecision, formatStatus } from "./presentation.ts";
 import { agentDirectory, loadSettings, type LoadedSettings } from "./settings.ts";
-import type { ReviewableAction, ReviewResult, Settings } from "./types.ts";
+import type { ReviewableAction, ReviewFailureCode, ReviewResult, Settings } from "./types.ts";
 
 const EXECUTION_GUIDANCE = `pi-auto wraps the existing bash command without replacing its tool. Bash is sandboxed by default. For a fresh command requiring full host access, put '# pi-auto: host <reason>' on the first line, followed by the command. This requests automatic review of full user privileges and does not grant access by itself. After a sandbox denial, inspect possible partial effects and propose a narrower fresh command; never automatically replay an entire script. Submit one sandboxed bash tool call at a time; concurrent preflight requests are rejected for retry after the running command finishes.`;
 
@@ -16,12 +18,15 @@ interface DecisionRecord {
 	tool: string;
 	execution: "sandbox" | "host" | "tool";
 	outcome: "allow" | "deny";
-	source: "automatic" | "user" | "policy" | "unavailable";
+	source: "automatic" | "user" | "policy" | "unavailable" | "invalid-response";
 	fingerprint: string;
 	evidence?: string[];
 	risk?: string;
 	authorization?: string;
 	latencyMs?: number;
+	reviewId?: string;
+	reviewAttempts?: number;
+	reviewFailure?: ReviewFailureCode;
 }
 
 export interface RuntimeDependencies {
@@ -32,6 +37,7 @@ export interface RuntimeDependencies {
 	checkSandboxAvailability: typeof checkSandboxAvailability;
 	/** Default records contain no arguments, commands, rationale, or transcript. */
 	persistDecision?: (cwd: string, record: DecisionRecord) => Promise<void>;
+	persistReviewDebug?: typeof persistReviewDebug;
 }
 
 /** A single bounded local file; it contains metadata only and is never reviewer context. */
@@ -50,7 +56,7 @@ export default function piAuto(pi: ExtensionAPI): void { registerPiAuto(pi); }
 
 /** Exported composition function lets tests exercise actual routing and execution. */
 export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDependencies> = {}): void {
-	const deps: RuntimeDependencies = { loadSettings, reviewAction, prepareSandboxCommand, shutdownSandbox, checkSandboxAvailability, persistDecision, ...overrides };
+	const deps: RuntimeDependencies = { loadSettings, reviewAction, prepareSandboxCommand, shutdownSandbox, checkSandboxAvailability, persistDecision, persistReviewDebug, ...overrides };
 	let loaded: LoadedSettings | undefined;
 	let currentCwd = "";
 	let settings: Settings;
@@ -58,21 +64,23 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 	let logWarned = false;
 	let authorizationEpoch = 0;
 	const decisions: DecisionRecord[] = [];
+	const recentReviews: ReviewDebugRecord[] = [];
+	let debugLogWarned = false;
 	const pendingBash = new Map<string, { wrapper: PreparedSandboxCommand; originalCommand: string; input: Record<string, unknown> }>();
 	const fingerprint = (input: unknown, cwd: string) => JSON.stringify({ cwd, input });
 
 	function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" | "error" = "info"): void {
-		if (ctx.hasUI) ctx.ui.notify(`pi-auto: ${message}`, type);
+		if (ctx.hasUI) ctx.ui.notify(`auto · ${message}`, type);
 	}
 	function status(ctx: ExtensionContext): void {
-		ctx.ui.setStatus("pi-auto", !settings.enabled ? "pi-auto: OFF · no review or sandbox" : loaded?.errors.length ? "pi-auto: settings error" : "pi-auto: on · sandbox");
+		ctx.ui.setStatus("pi-auto", !settings.enabled ? "auto off" : loaded?.errors.length ? "auto !" : "auto");
 	}
 	function load(ctx: ExtensionContext): void {
 		authorizationEpoch++;
 		loaded = deps.loadSettings(ctx.cwd);
 		settings = loaded.settings;
 		currentCwd = ctx.cwd;
-		for (const error of loaded.errors) notify(ctx, `invalid configuration; tool execution blocked: ${error}`, "error");
+		if (loaded.errors.length) notify(ctx, "settings error · /auto debug paths", "error");
 		status(ctx);
 	}
 	function ensureLoaded(ctx: ExtensionContext): void { if (!loaded || currentCwd !== ctx.cwd) load(ctx); }
@@ -81,13 +89,28 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 			at: new Date().toISOString(), tool: action.toolName, execution: action.execution, outcome, source,
 			fingerprint: createHash("sha256").update(fingerprint(action.input, action.cwd)).digest("hex"),
 			...(result ? { latencyMs: result.latencyMs } : {}),
+			...(result?.diagnostics ? { reviewId: result.diagnostics.id, reviewAttempts: result.diagnostics.attempts.length } : {}),
+			...(result?.kind === "failed" && result.failureCode ? { reviewFailure: result.failureCode } : {}),
 			...(result?.kind === "assessed" ? { risk: result.assessment.risk_level, authorization: result.assessment.user_authorization, evidence: result.assessment.evidence } : {}),
 		};
 		decisions.push(entry);
 		if (decisions.length > 50) decisions.shift();
 		const cwd = ctx.cwd;
 		logQueue = logQueue.then(() => deps.persistDecision?.(cwd, entry)).catch(() => {
-			if (!logWarned) { notify(ctx, "could not persist decision metadata; /auto log still shows this session", "warning"); logWarned = true; }
+			if (!logWarned) { notify(ctx, "log not saved · /auto log", "warning"); logWarned = true; }
+		});
+	}
+
+	function captureDiagnostics(ctx: ExtensionContext, action: ReviewableAction, result: ReviewResult): void {
+		if (!result.diagnostics) return;
+		const entry: ReviewDebugRecord = {
+			at: new Date().toISOString(), tool: action.toolName, execution: action.execution,
+			outcome: result.kind === "failed" ? "failed" : result.decision.outcome, review: result.diagnostics,
+		};
+		recentReviews.push(entry);
+		if (recentReviews.length > 20) recentReviews.shift();
+		if (settings.reviewer.debug) logQueue = logQueue.then(() => deps.persistReviewDebug?.(entry)).catch(() => {
+			if (!debugLogWarned) { notify(ctx, "debug log not saved · /auto debug", "warning"); debugLogWarned = true; }
 		});
 	}
 
@@ -101,7 +124,7 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 		let scope = decideScope(snapshot, ctx.cwd, settings, metadata?.description ?? "");
 		if (scope.kind === "block") {
 			record(ctx, { toolName: event.toolName, toolCallId: event.toolCallId, input: snapshot.input, description: metadata?.description ?? "", cwd: ctx.cwd, label: event.toolName, execution: event.toolName === "bash" ? parseBashDirective(String(snapshot.input.command ?? "")).execution : "tool" }, "deny", "policy");
-			notify(ctx, scope.reason, "warning");
+			notify(ctx, `${event.toolName} blocked · ${compact(scope.reason)}`, "warning");
 			return { block: true, reason: `pi-auto policy: ${scope.reason}` };
 		}
 		const isCustomOverride = metadata?.sourceInfo?.source !== "builtin";
@@ -115,28 +138,31 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 		}
 		if (scope.kind === "skip") return undefined;
 		const action = scope.action;
-		ctx.ui.setStatus("pi-auto", `pi-auto: reviewing ${event.toolName}`);
+		ctx.ui.setStatus("pi-auto", `auto · ${compact(event.toolName, 28)}`);
 		let result: ReviewResult;
 		try { result = await deps.reviewAction(action, ctx, settings, signal); }
 		catch (error) { result = { kind: "failed", reason: error instanceof Error ? error.message : String(error), latencyMs: 0 }; }
 		finally { status(ctx); }
+		captureDiagnostics(ctx, action, result);
 		if (epoch !== authorizationEpoch) return { block: true, reason: "pi-auto session or policy changed during review. Propose the action again for a fresh decision." };
 		if (signal?.aborted) return { block: true, reason: "pi-auto review cancelled; action did not run." };
 		if (result.kind === "assessed" && result.decision.outcome === "allow") {
 			record(ctx, action, "allow", "automatic", result);
-			if (settings.notices === "all") notify(ctx, `${action.label} approved (${result.assessment.risk_level}/${result.assessment.user_authorization})`);
+			if (settings.notices === "all") notify(ctx, `${action.toolName} allowed · ${result.assessment.risk_level}`);
 			return undefined;
 		}
-		const reason = result.kind === "failed" ? `Automatic reviewer unavailable: ${result.reason}` : result.decision.reason;
-		const hostWarning = action.execution === "host" ? "\nThis command will run with your full host privileges and no pi-auto sandbox. It may affect files, network services, and credentials outside this project." : "";
+		const invalidResponse = result.kind === "failed" && ["empty_response", "invalid_json", "not_object", "missing_fields", "unexpected_fields", "invalid_field", "output_truncated"].includes(result.failureCode ?? "");
+		const reason = result.kind === "failed"
+			? `${reviewFailureLabel(result.failureCode)}${result.failureCode ? ` [${result.failureCode}]` : ""}: ${result.reason}${result.diagnostics ? `\nReview ID: ${result.diagnostics.id}. Use /auto debug to inspect content-free diagnostics.` : ""}`
+			: result.decision.reason;
 		let approved = false;
 		if (ctx.hasUI) {
-			approved = await ctx.ui.confirm("pi-auto · approve this action once?", `${action.label}\n\n${reason}${hostWarning}\n\nExact action:\n${JSON.stringify(action, null, 2)}\n\nAllow this exact action once?`, { signal });
+			approved = await ctx.ui.confirm(`Allow ${action.toolName} once?`, formatApproval(action, result), { signal });
 		}
 		if (epoch !== authorizationEpoch) return { block: true, reason: "pi-auto session or policy changed during approval. Propose the action again for a fresh decision." };
 		if (approved && !signal?.aborted) { record(ctx, action, "allow", "user", result); return undefined; }
-		record(ctx, action, "deny", result.kind === "failed" ? "unavailable" : "automatic", result);
-		notify(ctx, `${action.label} blocked: ${reason}`, "warning");
+		record(ctx, action, "deny", result.kind === "failed" ? invalidResponse ? "invalid-response" : "unavailable" : "automatic", result);
+		notify(ctx, `${action.toolName} blocked · ${failureSummary(result)}`, "warning");
 		return { block: true, reason: `pi-auto blocked this action before execution. ${reason}${ctx.hasUI ? "" : " User approval is required; interactive or RPC approval is available."}` };
 	}
 
@@ -206,10 +232,10 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 	pi.on("session_start", async (_event, ctx) => {
 		authorizationEpoch++;
 		await cancelPending(); load(ctx);
-		if (!settings.enabled) { notify(ctx, "OFF: no pi-auto review, path restrictions, or bash sandboxing.", "warning"); return; }
+		if (!settings.enabled) return;
 		const availability = deps.checkSandboxAvailability();
-		if (!availability.available) notify(ctx, `sandbox unavailable; sandbox commands will fail closed: ${availability.errors.join("; ")}`, "error");
-		for (const warning of availability.warnings) notify(ctx, warning, "warning");
+		if (!availability.available) notify(ctx, "sandbox unavailable · /auto debug paths", "error");
+		for (const warning of availability.warnings) notify(ctx, compact(warning), "warning");
 	});
 	pi.on("session_tree", async (_event, ctx) => { authorizationEpoch++; if (ctx.isIdle?.()) await cancelPending(); status(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -220,11 +246,13 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 	});
 	pi.on("session_shutdown", async () => { authorizationEpoch++; await cancelPending(); await logQueue; await deps.shutdownSandbox(); });
 
+	const usage = "usage: /auto on|off|status|reload|log|debug";
 	pi.registerCommand("auto", {
-		description: "pi-auto on, off, status, reload, or log; off fully disables pi-auto review and sandboxing",
+		description: "Review + sandbox: on, off, status, reload, log, debug",
 		async handler(args, ctx) {
 			ensureLoaded(ctx);
-			const command = args.trim() || "status";
+			const [command = "status", option, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+			if (extra.length || (option !== undefined && command !== "debug" && command !== "log")) { notify(ctx, usage, "warning"); return; }
 			if (command === "on" || command === "off") {
 				await ctx.waitForIdle();
 				authorizationEpoch++;
@@ -232,18 +260,32 @@ export function registerPiAuto(pi: ExtensionAPI, overrides: Partial<RuntimeDepen
 				await deps.shutdownSandbox();
 				settings.enabled = command === "on";
 				status(ctx);
-				notify(ctx, settings.enabled ? "ON: automatic review, path restrictions, and bash sandboxing enabled for this session." : "OFF: all pi-auto review, approval prompts, path restrictions, and bash sandboxing disabled for this session. Tools run with normal host privileges.", settings.enabled ? "info" : "warning");
+				notify(ctx, settings.enabled ? "on" : "off · review + sandbox disabled", settings.enabled ? "info" : "warning");
 			} else if (command === "reload") {
 				await ctx.waitForIdle();
 				authorizationEpoch++; await cancelPending();
 				await deps.shutdownSandbox(); load(ctx);
-				notify(ctx, loaded!.errors.length ? "settings reload failed; execution is blocked" : "fresh v2 settings reloaded", loaded!.errors.length ? "error" : "info");
+				if (!loaded!.errors.length) notify(ctx, "reloaded");
+			} else if (command === "debug") {
+				if (option === "on" || option === "off") {
+					settings.reviewer.debug = option === "on";
+					notify(ctx, `debug ${option}`);
+				} else if (option === "paths") {
+					const availability = deps.checkSandboxAvailability();
+					notify(ctx, [`User settings: ${loaded!.paths.user}`, `Project settings: ${loaded!.paths.project}`, `Debug log: ${reviewerDebugPath()}`, `Sandbox: ${availability.available ? "available" : "unavailable"}`, ...(availability.defaultWritePaths?.length ? [`Compatibility writes:\n${availability.defaultWritePaths.join("\n")}`] : []), ...loaded!.errors, ...availability.errors, ...availability.warnings].join("\n"));
+				} else if (option) {
+					const id = option.replace(/^#/, "");
+					const matches = option === "last" ? recentReviews.slice(-1) : recentReviews.filter((entry) => entry.review.id.startsWith(id));
+					notify(ctx, matches.length === 1 ? formatReviewDebug(matches[0]!) : matches.length > 1 ? "ambiguous review ID · use more characters" : "review not found", matches.length === 1 ? "info" : "warning");
+				} else {
+					notify(ctx, [`debug ${settings.reviewer.debug ? "on" : "off"} · /auto debug <id> for details`, ...(recentReviews.length ? recentReviews.slice(-5).map(formatDebugSummary) : ["no reviews"])].join("\n"));
+				}
 			} else if (command === "log") {
-				notify(ctx, decisions.length ? decisions.map((entry) => `${entry.at} ${entry.tool} ${entry.execution}: ${entry.outcome} (${entry.source}${entry.risk ? `, ${entry.risk}/${entry.authorization}` : ""})`).join("\n") : "no reviewed actions in this session");
+				if (option !== undefined && option !== "all") { notify(ctx, "usage: /auto log [all]", "warning"); return; }
+				notify(ctx, decisions.length ? decisions.slice(option === "all" ? -50 : -10).map(formatDecision).join("\n") : "no decisions");
 			} else if (command === "status") {
-				const availability = deps.checkSandboxAvailability();
-				notify(ctx, `pi-auto ${settings.enabled ? "on; review and path restrictions on; bash sandbox on" : "OFF; all review, path restrictions, and bash sandboxing off"}; sandbox runtime ${availability.available ? "available" : "unavailable"}; reviewer ${settings.reviewer.provider}/${settings.reviewer.model} (reasoning: ${settings.reviewer.reasoning})\nUser settings: ${loaded!.paths.user}\nProject settings: ${loaded!.paths.project}${availability.defaultWritePaths?.length ? `\nRuntime compatibility writes: ${availability.defaultWritePaths.join(", ")}` : ""}${loaded!.errors.length ? `\nErrors: ${loaded!.errors.join("; ")}` : ""}`);
-			} else notify(ctx, "usage: /auto on | off | status | reload | log", "warning");
+				notify(ctx, formatStatus(settings, deps.checkSandboxAvailability().available, !!loaded!.errors.length));
+			} else notify(ctx, usage, "warning");
 		},
 	});
 }

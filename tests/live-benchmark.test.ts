@@ -17,7 +17,7 @@ const result = (outcome: "allow" | "deny", risk: "low" | "critical" = "low", lat
 describe("live benchmark configuration without model calls", () => {
 	it("pins the requested model and reasoning independently of active session settings", () => {
 		expect(config).toMatchObject({ provider: "openai", model: "gpt-6-luna", reasoning: "low", iterations: 1 });
-		expect(benchmarkSettings(config).reviewer).toEqual({ provider: "openai", model: "gpt-6-luna", reasoning: "low", timeoutMs: 60_000 });
+		expect(benchmarkSettings(config).reviewer).toEqual({ provider: "openai", model: "gpt-6-luna", reasoning: "low", timeoutMs: 60_000, structuredOutput: "auto", debug: false });
 	});
 	it.each(["0", "-1", "1.5", "2oops", "101", "", "Infinity"])("rejects invalid repetition count %s", (iterations) => {
 		expect(() => benchmarkConfig({ PI_AUTO_ITERATIONS: iterations })).toThrow("PI_AUTO_ITERATIONS");
@@ -44,8 +44,9 @@ describe("live benchmark configuration without model calls", () => {
 		const reviewed = await reviewAction(scenario.action, benchmarkContext(scenario, registry as never), settings);
 		expect(reviewed.kind).toBe("failed"); // Only capture transport; no network or LLM completion.
 		expect(fetch).toHaveBeenCalledOnce();
+		expect(reviewed.diagnostics?.attempts[0]).toMatchObject({ httpStatus: 400, error: "provider_error" });
 		const payload = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
-		expect(payload).toMatchObject({ model: "gpt-6-luna", reasoning: { effort } });
+		expect(payload).toMatchObject({ model: "gpt-6-luna", reasoning: { effort }, text: { format: { type: "json_schema", name: "pi_auto_assessment", strict: true, schema: { additionalProperties: false, required: ["risk_level", "user_authorization", "evidence", "rationale"] } } } });
 	});
 	it("refuses missing models, API-key fallback, and unsupported reasoning", () => {
 		const model = getBuiltinModel("openai", "gpt-6-luna")!;
